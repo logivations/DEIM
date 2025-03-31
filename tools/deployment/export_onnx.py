@@ -15,6 +15,8 @@ import torch.nn as nn
 
 from engine.core import YAMLConfig
 
+RES = 640
+
 
 def main(args, ):
     """main
@@ -42,31 +44,48 @@ def main(args, ):
         def __init__(self, ) -> None:
             super().__init__()
             self.model = cfg.model.deploy()
+            self.size = torch.tensor([[RES, RES]])
+
             self.postprocessor = cfg.postprocessor.deploy()
 
-        def forward(self, images, orig_target_sizes):
+        def forward(self, images):
             outputs = self.model(images)
-            outputs = self.postprocessor(outputs, orig_target_sizes)
+            outputs = self.postprocessor(outputs, self.size)
             return outputs
 
     model = Model()
 
-    data = torch.rand(32, 3, 640, 640)
-    size = torch.tensor([[640, 640]])
-    _ = model(data, size)
+    data = torch.rand(32, 3, RES, RES)
+    size = torch.tensor([[RES, RES]])
+    _ = model(data)
 
     dynamic_axes = {
-        'images': {0: 'N', },
-        'orig_target_sizes': {0: 'N'}
+        'images': {
+            0: 'batch',
+            2: 'height',
+            3: 'width'
+        },
+        'labels': {
+            0: 'batch',
+            1: 'num_dets',
+        },
+        'boxes': {
+            0: 'batch',
+            1: 'num_dets',
+        },
+        'scores': {
+            0: 'batch',
+            1: 'num_dets',
+        },
     }
 
     output_file = args.resume.replace('.pth', '.onnx') if args.resume else 'model.onnx'
 
     torch.onnx.export(
         model,
-        (data, size),
+        (data),
         output_file,
-        input_names=['images', 'orig_target_sizes'],
+        input_names=['images'],
         output_names=['labels', 'boxes', 'scores'],
         dynamic_axes=dynamic_axes,
         opset_version=16,
@@ -85,7 +104,7 @@ def main(args, ):
         import onnxsim
         dynamic = True
         # input_shapes = {'images': [1, 3, 640, 640], 'orig_target_sizes': [1, 2]} if dynamic else None
-        input_shapes = {'images': data.shape, 'orig_target_sizes': size.shape} if dynamic else None
+        input_shapes = {'images': data.shape} if dynamic else None
         onnx_model_simplify, check = onnxsim.simplify(output_file, test_input_shapes=input_shapes)
         onnx.save(onnx_model_simplify, output_file)
         print(f'Simplify onnx model {check}...')

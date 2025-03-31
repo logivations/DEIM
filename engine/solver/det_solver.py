@@ -115,10 +115,21 @@ class DetSolver(BaseSolver):
             )
 
             # TODO
+            metrics_correct_name = ["mAP", "mAP@0.5", "mAP@0.75", "mAP_s", "mAP_m", "mAP_l",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=1]",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=10]",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=100]"
+                                    "AR@[IoU=0.50:0.95_area=small]",
+                                    "AR@[IoU=0.50:0.95_area=medium]",
+                                    "AR@[IoU=0.50:0.95_area=large]",
+                                    "AR@[IoU=0.50]",
+                                    "AR@[IoU=0.75]"
+            ]
             for k in test_stats:
                 if self.writer and dist_utils.is_main_process():
                     for i, v in enumerate(test_stats[k]):
                         self.writer.add_scalar(f'Test/{k}_{i}'.format(k), v, epoch)
+                        self.writer.add_scalar(f'Test/{k}_{metrics_correct_name[i]}'.format(k), v, epoch)
 
                 if k in best_stat:
                     best_stat['epoch'] = epoch if test_stats[k][0] > best_stat[k] else best_stat['epoch']
