@@ -1,1 +1,1 @@
-tensorboard --logdir /DEIM/output --port 6006 --host 0.0.0.0
+docker exec -ti deim_train tensorboard --logdir /DEIM/output --port 6006 --host 0.0.0.0
