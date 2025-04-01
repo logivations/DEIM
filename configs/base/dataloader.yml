@@ -8,7 +8,6 @@ train_dataloader:
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: RandomHorizontalFlip}
-        # - {type: Resize, size: [640, 640], }
         - {type: Resize, size: [512, 512], }
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
@@ -26,8 +25,7 @@ train_dataloader:
     stop_epoch: 72 # epoch in [72, ~) stop `multiscales`
 
   shuffle: True
-  # total_batch_size: 32 # total batch size equals to 32 (4 * 8)
-  total_batch_size: 8 # total batch size equals to 32 (4 * 8)
+  total_batch_size: 32 # total batch size equals to 32 (4 * 8)
   num_workers: 4
 
 
@@ -35,10 +33,8 @@ val_dataloader:
   dataset:
     transforms:
       ops:
-        # - {type: Resize, size: [640, 640], }
         - {type: Resize, size: [512, 512], }
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
-  # total_batch_size: 64
-  total_batch_size: 8
+  total_batch_size: 64
   num_workers: 4

@@ -86,12 +86,11 @@ def setup_print(is_main, method='builtin'):
 
 
 def is_dist_available_and_initialized():
-    return False
-    #if not torch.distributed.is_available():
-    #    return False
-    #if not torch.distributed.is_initialized():
-    #    return False
-    #return True
+    if not torch.distributed.is_available():
+       return False
+    if not torch.distributed.is_initialized():
+       return False
+    return True
 
 
 @atexit.register

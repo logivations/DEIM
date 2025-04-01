@@ -15,7 +15,7 @@ import torch.nn as nn
 
 from engine.core import YAMLConfig
 
-RES = 640
+RES = 512
 
 
 def main(args, ):
