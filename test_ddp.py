@@ -15,7 +15,7 @@ except ImportError as e:
 
 
 if dist.is_available() and not dist.is_initialized():
-    dist.init_process_group(backend="nccl", init_method="env://")
+    dist.init_process_group(init_method="env://")
 
 if dist.is_initialized():
     rank = dist.get_rank()
