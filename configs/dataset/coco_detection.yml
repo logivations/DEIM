@@ -5,7 +5,7 @@ evaluator:
   iou_types: ['bbox', ]
 
 # TODO: Specify number of classes in dataset
-num_classes: 8
+num_classes: 9
 remap_mscoco_category: False
 
 train_dataloader: 
@@ -13,8 +13,8 @@ train_dataloader:
   dataset: 
     type: CocoDetection
     # TODO: Specify path to train data
-    img_folder: /path/to/images
-    ann_file: /path/to/coco_train.json
+    img_folder: /datasets/rewe_comp/gm_base/train/image_2
+    ann_file: /datasets/rewe_comp/gm_base/train/coco_train.json
     return_masks: False
     transforms:
       type: Compose
@@ -31,8 +31,8 @@ val_dataloader:
   dataset: 
     type: CocoDetection
     # TODO: Specify path to validation data
-    img_folder: /path/to/images
-    ann_file: /path/to/coco_val.json
+    img_folder: /datasets/rewe_comp/gm_base/val/image_2
+    ann_file: /datasets/rewe_comp/gm_base/val/coco_val.json
     return_masks: False
     transforms:
       type: Compose
