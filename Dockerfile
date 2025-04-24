@@ -2,7 +2,7 @@
 # NVIDIA GeForce RTX 3060 / RTX 3060 Ti - sm_86
 # NVIDIA GeForce RTX 2080 Ti            - sm_75
 # NVIDIA A100-SXM4-40GB                 - sm_80
-# docker build -t deim:test .
+# docker build -t quay.io/logivations/ml_all:LS_dfine_latest .
 
 ARG PYTORCH="2.0.1"
 ARG CUDA="11.7"

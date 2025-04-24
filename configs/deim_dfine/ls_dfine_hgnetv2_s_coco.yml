@@ -1,12 +1,12 @@
 __include__: [
-  '../dataset/coco_detection.yml',
+  '../dataset/ls_coco_detection.yml',
   '../runtime.yml',
   '../base/dataloader.yml',
   '../base/optimizer.yml',
   '../base/dfine_hgnetv2.yml',
 ]
 
-output_dir: /result/
+output_dir: /results/
 
 
 DEIM:
