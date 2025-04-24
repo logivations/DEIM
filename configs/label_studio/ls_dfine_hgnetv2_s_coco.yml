@@ -1,9 +1,9 @@
 __include__: [
-  '../dataset/ls_coco_detection.yml',
+  './ls_coco_detection.yml',
+  './ls_dataloader.yml',
+  './ls_dfine_hgnetv2.yml',
   '../runtime.yml',
-  '../base/dataloader.yml',
-  '../base/optimizer.yml',
-  '../base/dfine_hgnetv2.yml',
+  '../base/optimizer.yml'
 ]
 
 output_dir: /results/
