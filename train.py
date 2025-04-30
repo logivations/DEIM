@@ -5,9 +5,10 @@ Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 Modified from RT-DETR (https://github.com/lyuwenyu/RT-DETR)
 Copyright (c) 2023 lyuwenyu. All Rights Reserved.
 """
-
+import json
 import os
 import sys
+import pickle
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 import argparse
@@ -15,7 +16,7 @@ import argparse
 from engine.misc import dist_utils
 from engine.core import YAMLConfig, yaml_utils
 from engine.solver import TASKS
-
+from tools.utils import apply_ls_params
 debug=False
 
 if debug:
@@ -25,30 +26,31 @@ if debug:
     original_repr = torch.Tensor.__repr__
     torch.Tensor.__repr__ = custom_repr
 
-def main(args, ) -> None:
+def main(cmd_args: argparse.Namespace, ) -> None:
     """main
     """
-    dist_utils.setup_distributed(args.print_rank, args.print_method, seed=args.seed)
+    dist_utils.setup_distributed(cmd_args.print_rank, cmd_args.print_method, seed=cmd_args.seed)
 
-    assert not all([args.tuning, args.resume]), \
+    assert not all([cmd_args.tuning, cmd_args.resume]), \
         'Only support from_scrach or resume or tuning at one time'
 
 
-    update_dict = yaml_utils.parse_cli(args.update)
-    update_dict.update({k: v for k, v in args.__dict__.items() \
+    update_dict = yaml_utils.parse_cli(cmd_args.update)
+    update_dict.update({k: v for k, v in cmd_args.__dict__.items() \
         if k not in ['update', ] and v is not None})
 
-    cfg = YAMLConfig(args.config, **update_dict)
+    cfg = YAMLConfig(cmd_args.config, **update_dict)
 
-    if args.resume or args.tuning:
+    if cmd_args.resume or cmd_args.tuning:
         if 'HGNetv2' in cfg.yaml_cfg:
             cfg.yaml_cfg['HGNetv2']['pretrained'] = False
 
+    cfg = apply_ls_params(cmd_args, cfg)
     print('cfg: ', cfg.__dict__)
 
     solver = TASKS[cfg.yaml_cfg['task']](cfg)
 
-    if args.test_only:
+    if cmd_args.test_only:
         solver.val()
     else:
         solver.fit()
@@ -70,6 +72,14 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, help='output directoy')
     parser.add_argument('--summary-dir', type=str, help='tensorboard summry')
     parser.add_argument('--test-only', action='store_true', default=False,)
+    # LabelStudio
+    parser.add_argument('--train-epochs', type=int, default=72,)
+    parser.add_argument(
+        '--training-res',
+        type=int,
+        default=[512, 512],
+        nargs='+',
+        help='Training resolution')
 
     # priority 1
     parser.add_argument('-u', '--update', nargs='+', help='update yaml config')

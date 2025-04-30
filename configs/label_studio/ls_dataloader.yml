@@ -19,7 +19,6 @@ train_dataloader:
 
   collate_fn:
     type: BatchImageCollateFunction
-    # base_size: 640
     base_size: 512
     base_size_repeat: 3
     stop_epoch: 72 # epoch in [72, ~) stop `multiscales`

@@ -4,17 +4,15 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-# TODO: Specify number of classes in dataset
-num_classes: 9
+num_classes: 0
 remap_mscoco_category: False
 
 train_dataloader: 
   type: DataLoader
   dataset: 
     type: CocoDetection
-    # TODO: Specify path to train data
-    img_folder: /datasets/rewe_comp/gm_base/train/image_2
-    ann_file: /datasets/rewe_comp/gm_base/train/coco_train.json
+    img_folder: /dataset/train/
+    ann_file: /dataset/coco_annotations.json
     return_masks: False
     transforms:
       type: Compose
@@ -30,9 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    # TODO: Specify path to validation data
-    img_folder: /datasets/rewe_comp/gm_base/val/image_2
-    ann_file: /datasets/rewe_comp/gm_base/val/coco_val.json
+    img_folder: /dataset/test/
+    ann_file: /dataset/coco_annotations.json
     return_masks: False
     transforms:
       type: Compose

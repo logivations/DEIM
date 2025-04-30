@@ -56,7 +56,6 @@ class DetSolver(BaseSolver):
                 best_stat['epoch'] = self.last_epoch
                 best_stat[k] = test_stats[k][0]
                 top1 = test_stats[k][0]
-                print(f'best_stat: {best_stat}')
 
         best_stat_print = best_stat.copy()
         start_time = time.time()
@@ -115,10 +114,21 @@ class DetSolver(BaseSolver):
             )
 
             # TODO
+            metrics_correct_name = ["mAP", "mAP@0.5", "mAP@0.75", "mAP_s", "mAP_m", "mAP_l",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=1]",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=10]",
+                                    "AR@[IoU=0.50:0.95_area=all_maxDets=100]"
+                                    "AR@[IoU=0.50:0.95_area=small]",
+                                    "AR@[IoU=0.50:0.95_area=medium]",
+                                    "AR@[IoU=0.50:0.95_area=large]",
+                                    "AR@[IoU=0.50]",
+                                    "AR@[IoU=0.75]"
+            ]
             for k in test_stats:
                 if self.writer and dist_utils.is_main_process():
                     for i, v in enumerate(test_stats[k]):
                         self.writer.add_scalar(f'Test/{k}_{i}'.format(k), v, epoch)
+                        self.writer.add_scalar(f'Test/{k}_{metrics_correct_name[i]}'.format(k), v, epoch)
 
                 if k in best_stat:
                     best_stat['epoch'] = epoch if test_stats[k][0] > best_stat[k] else best_stat['epoch']
@@ -131,13 +141,15 @@ class DetSolver(BaseSolver):
                     best_stat_print['epoch'] = epoch
                     top1 = best_stat[k]
                     if self.output_dir:
+                        # Save metrics for ls
+                        with open(self.output_dir / 'metrics.json', 'w') as f:
+                            json.dump(test_stats, f)
                         if epoch >= self.train_dataloader.collate_fn.stop_epoch:
                             dist_utils.save_on_master(self.state_dict(), self.output_dir / 'best_stg2.pth')
                         else:
                             dist_utils.save_on_master(self.state_dict(), self.output_dir / 'best_stg1.pth')
 
                 best_stat_print[k] = max(best_stat[k], top1)
-                print(f'best_stat: {best_stat_print}')  # global best
 
                 if best_stat['epoch'] == epoch and self.output_dir:
                     if epoch >= self.train_dataloader.collate_fn.stop_epoch:

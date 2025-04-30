@@ -4,6 +4,7 @@ Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references
 
 Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
+import os
 
 import torch
 import torch.utils.data
@@ -37,6 +38,12 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         self.ann_file = ann_file
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
+
+        # Exclude images from folders with different tags
+        self.ids = [
+            id_ for id_ in self.coco.getImgIds()
+            if os.path.exists(os.path.join(self.root, self.coco.loadImgs(id_)[0]['file_name']))
+        ]
 
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
