@@ -14,19 +14,24 @@ import torch
 import torch.nn as nn
 
 from engine.core import YAMLConfig
-
-RES = 512
+from tools.utils import apply_ls_params
 
 
 def main(args, ):
     """main
     """
     cfg = YAMLConfig(args.config, resume=args.resume)
-
     if 'HGNetv2' in cfg.yaml_cfg:
         cfg.yaml_cfg['HGNetv2']['pretrained'] = False
-
+    cfg = apply_ls_params(args, cfg)
+    output_file = None
     if args.resume:
+        if args.resume.endswith('best.pth'):
+            output_file = args.resume.replace('best.pth', 'dfine_model.onnx')
+            if os.path.exists(args.resume.replace('best.pth', 'best_stg2.pth')):
+                args.resume = args.resume.replace('best.pth', 'best_stg2.pth')
+            elif os.path.exists(args.resume.replace('best.pth', 'best_stg1.pth')):
+                args.resume = args.resume.replace('best.pth', 'best_stg1.pth')
         checkpoint = torch.load(args.resume, map_location='cpu')
         if 'ema' in checkpoint:
             state = checkpoint['ema']['module']
@@ -44,7 +49,7 @@ def main(args, ):
         def __init__(self, ) -> None:
             super().__init__()
             self.model = cfg.model.deploy()
-            self.size = torch.tensor([[RES, RES]])
+            self.size = torch.tensor([args.training_res])
 
             self.postprocessor = cfg.postprocessor.deploy()
 
@@ -55,8 +60,8 @@ def main(args, ):
 
     model = Model()
 
-    data = torch.rand(32, 3, RES, RES)
-    size = torch.tensor([[RES, RES]])
+    data = torch.rand(32, 3, *args.training_res)
+    size = torch.tensor([args.training_res])
     _ = model(data)
 
     dynamic_axes = {
@@ -78,8 +83,8 @@ def main(args, ):
             1: 'num_dets',
         },
     }
-
-    output_file = args.resume.replace('.pth', '.onnx') if args.resume else 'model.onnx'
+    if output_file is None:
+        output_file = args.resume.replace('.pth', '.onnx') if args.resume else 'model.onnx'
 
     torch.onnx.export(
         model,
@@ -118,5 +123,13 @@ if __name__ == '__main__':
     parser.add_argument('--resume', '-r', type=str, )
     parser.add_argument('--check',  action='store_true', default=True,)
     parser.add_argument('--simplify',  action='store_true', default=True,)
+    parser.add_argument('--train-epochs', type=int, default=72)
+    parser.add_argument(
+        '--training-res',
+        type=int,
+        default=[512, 512],
+        nargs='+',
+        help='Training resolution')
+
     args = parser.parse_args()
     main(args)

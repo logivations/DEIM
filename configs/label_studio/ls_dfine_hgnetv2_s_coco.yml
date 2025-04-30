@@ -6,7 +6,7 @@ __include__: [
   '../base/optimizer.yml'
 ]
 
-output_dir: /results/
+output_dir: /result/
 
 
 DEIM:

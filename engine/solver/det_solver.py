@@ -56,7 +56,6 @@ class DetSolver(BaseSolver):
                 best_stat['epoch'] = self.last_epoch
                 best_stat[k] = test_stats[k][0]
                 top1 = test_stats[k][0]
-                print(f'best_stat: {best_stat}')
 
         best_stat_print = best_stat.copy()
         start_time = time.time()
@@ -142,13 +141,15 @@ class DetSolver(BaseSolver):
                     best_stat_print['epoch'] = epoch
                     top1 = best_stat[k]
                     if self.output_dir:
+                        # Save metrics for ls
+                        with open(self.output_dir / 'metrics.json', 'w') as f:
+                            json.dump(test_stats, f)
                         if epoch >= self.train_dataloader.collate_fn.stop_epoch:
                             dist_utils.save_on_master(self.state_dict(), self.output_dir / 'best_stg2.pth')
                         else:
                             dist_utils.save_on_master(self.state_dict(), self.output_dir / 'best_stg1.pth')
 
                 best_stat_print[k] = max(best_stat[k], top1)
-                print(f'best_stat: {best_stat_print}')  # global best
 
                 if best_stat['epoch'] == epoch and self.output_dir:
                     if epoch >= self.train_dataloader.collate_fn.stop_epoch:
