@@ -11,7 +11,7 @@ from PIL import Image
 import sys
 import os
 
-from tools.utils import apply_ls_params
+from tools.utils import apply_ls_params, scale_bbox_coordinates
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from engine.core import YAMLConfig
@@ -118,9 +118,11 @@ class Inference:
             img_path = f"{self.inf_dir}/{imn}"
             self.fps_logger.start_record()
             labels, boxes, scores = self.process_image(img_path)
+            im_pil = Image.open(img_path).convert('RGB')
             bboxes = []
             for label, bbox, score in zip(labels[0], boxes[0], scores[0]):
                 if score > threshold:
+                    bbox = scale_bbox_coordinates(bbox.tolist(), im_pil.size, self.training_res)
                     # x1, x2, y1, y2 why?
                     det = list(map(float, [bbox[0], bbox[2], bbox[1], bbox[3], label, score]))
                     bboxes.append(det)

@@ -1,6 +1,7 @@
 import json
 import argparse
 from engine.core import YAMLConfig
+from typing import List, Tuple
 
 def apply_ls_params(args: argparse.Namespace, cfg: YAMLConfig, stg1_epochs_perc: float = 1 / 6):
     # Set epochs
@@ -27,3 +28,20 @@ def apply_ls_params(args: argparse.Namespace, cfg: YAMLConfig, stg1_epochs_perc:
         num_classes = len(coco_ann['categories'])
     cfg.yaml_cfg['num_classes'] = num_classes
     return cfg
+
+def scale_bbox_coordinates(
+    bbox: List[float],
+    source_image_shape: Tuple[int, int],
+    target_image_shape: Tuple[int, int],
+) -> List[float]:
+    """
+    Scale the given bbox from image coordinates of source_image_shape, to
+    image coordinates of target_image_shape.
+    """
+    factor_x = source_image_shape[0] / target_image_shape[0]
+    factor_y = source_image_shape[1] / target_image_shape[1]
+    bbox[0] *= factor_x
+    bbox[1] *= factor_y
+    bbox[2] *= factor_x
+    bbox[3] *= factor_y
+    return bbox
