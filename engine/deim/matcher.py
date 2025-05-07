@@ -69,47 +69,57 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        bs, num_queries = outputs["pred_logits"].shape[:2]
+        # print(f"Targets:")
+        # for t in targets:
+        #     print("\t t: {}".format(t))
+        #     t['bboxes'] = torch.tensor([], dtype=torch.int64).to("cuda:0")
+        #     t['labels'] = torch.tensor([], dtype=torch.int64).to("cuda:0")
+        try:
+            bs, num_queries = outputs["pred_logits"].shape[:2]
 
-        # We flatten to compute the cost matrices in a batch
-        if self.use_focal_loss:
-            out_prob = F.sigmoid(outputs["pred_logits"].flatten(0, 1))
-        else:
-            out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
+            # We flatten to compute the cost matrices in a batch
+            if self.use_focal_loss:
+                out_prob = F.sigmoid(outputs["pred_logits"].flatten(0, 1))
+            else:
+                out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
 
-        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
+            out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
-        # Also concat the target labels and boxes
-        tgt_ids = torch.cat([v["labels"] for v in targets])
-        tgt_bbox = torch.cat([v["boxes"] for v in targets])
+            # Also concat the target labels and boxes
+            tgt_ids = torch.cat([v["labels"] for v in targets])
+            tgt_bbox = torch.cat([v["boxes"] for v in targets])
 
-        # Compute the classification cost. Contrary to the loss, we don't use the NLL,
-        # but approximate it in 1 - proba[target class].
-        # The 1 is a constant that doesn't change the matching, it can be ommitted.
-        if self.use_focal_loss:
-            out_prob = out_prob[:, tgt_ids]
-            neg_cost_class = (1 - self.alpha) * (out_prob ** self.gamma) * (-(1 - out_prob + 1e-8).log())
-            pos_cost_class = self.alpha * ((1 - out_prob) ** self.gamma) * (-(out_prob + 1e-8).log())
-            cost_class = pos_cost_class - neg_cost_class
-        else:
-            cost_class = -out_prob[:, tgt_ids]
+            # Compute the classification cost. Contrary to the loss, we don't use the NLL,
+            # but approximate it in 1 - proba[target class].
+            # The 1 is a constant that doesn't change the matching, it can be ommitted.
+            if self.use_focal_loss:
+                out_prob = out_prob[:, tgt_ids]
+                neg_cost_class = (1 - self.alpha) * (out_prob ** self.gamma) * (-(1 - out_prob + 1e-8).log())
+                pos_cost_class = self.alpha * ((1 - out_prob) ** self.gamma) * (-(out_prob + 1e-8).log())
+                cost_class = pos_cost_class - neg_cost_class
+            else:
+                cost_class = -out_prob[:, tgt_ids]
 
-        # Compute the L1 cost between boxes
-        cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
+            # Compute the L1 cost between boxes
+            cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
-        # Compute the giou cost betwen boxes
-        cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
+            # Compute the giou cost betwen boxes
+            cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
-        # Final cost matrix 3 * self.cost_bbox + 2 * self.cost_class + self.cost_giou
-        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
-        C = C.view(bs, num_queries, -1).cpu()
+            # Final cost matrix 3 * self.cost_bbox + 2 * self.cost_class + self.cost_giou
+            C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+            C = C.view(bs, num_queries, -1).cpu()
 
-        sizes = [len(v["boxes"]) for v in targets]
-        # FIXME，RT-DETR, different way to set NaN
-        C = torch.nan_to_num(C, nan=1.0)
-        indices_pre = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-        indices = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices_pre]
-
+            sizes = [len(v["boxes"]) for v in targets]
+            # FIXME，RT-DETR, different way to set NaN
+            C = torch.nan_to_num(C, nan=1.0)
+            indices_pre = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+            indices = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices_pre]
+        except Exception as e:
+            print("Exception in targets:")
+            for t in targets:
+                print("\t t: {}".format(t))
+            raise
         # Compute topk indices
         if return_topk:
             return {'indices_o2m': self.get_top_k_matches(C, sizes=sizes, k=return_topk, initial_indices=indices_pre)}

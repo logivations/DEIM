@@ -67,6 +67,10 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             loss = sum(loss_dict.values())
             scaler.scale(loss).backward()
 
+            for name, param in model.named_parameters():
+                if param.requires_grad and param.grad is None:
+                    print(f"[NO GRAD] {name}")
+
             if max_norm > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)

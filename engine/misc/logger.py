@@ -214,6 +214,11 @@ class MetricLogger(object):
         MB = 1024.0 * 1024.0
         for obj in iterable:
             data_time.update(time.time() - end)
+            # Skip, if we have only annotations without objects, original repo issue wow :D
+            # if we have 4 empty images we skip denoising in get_contrastive_denoising_training_group
+            # And have no grad for module.decoder.denoising_class_embed.weight
+            if max([len(o['labels']) for o in obj[1]]) == 0:
+                continue
             yield obj
             iter_time.update(time.time() - end)
             if i % print_freq == 0 or i == len(iterable) - 1:
