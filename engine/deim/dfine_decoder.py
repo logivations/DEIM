@@ -5,7 +5,7 @@ Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 Modified from D-FINE (https://github.com/Peterande/D-FINE/)
 Copyright (c) 2024 D-FINE Authors. All Rights Reserved.
 """
-
+import traceback
 import math
 import copy
 import functools
@@ -719,6 +719,14 @@ class DFINETransformer(nn.Module):
                     )
         else:
             denoising_logits, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
+
+        if dn_meta is None and targets is not None:
+            print("[WARNING] no dn_meta found, this can cause an issue with grad for module.decoder.denoising_class_embed.weight")
+            print(f"Targets without denoising: {targets}")
+            stack = traceback.extract_stack(limit=15)
+            for frame in stack:
+                print(f"File: {frame.filename}, row: {frame.lineno}, function: {frame.name}")
+
 
         init_ref_contents, init_ref_points_unact, enc_topk_bboxes_list, enc_topk_logits_list = \
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
