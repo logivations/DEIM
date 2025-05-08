@@ -50,7 +50,11 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
                 outputs = model(samples, targets=targets)
 
             if torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any():
-                print(outputs['pred_boxes'])
+                print("NaN or Inf detected")
+                print("Outputs:", outputs)
+                print("Targets:", targets)
+                outputs['pred_boxes'] = torch.nan_to_num(outputs['pred_boxes'], nan=0.0)
+
                 state = model.state_dict()
                 new_state = {}
                 for key, value in model.state_dict().items():
