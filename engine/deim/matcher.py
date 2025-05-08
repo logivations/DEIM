@@ -69,11 +69,6 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        # print(f"Targets:")
-        # for t in targets:
-        #     print("\t t: {}".format(t))
-        #     t['bboxes'] = torch.tensor([], dtype=torch.int64).to("cuda:0")
-        #     t['labels'] = torch.tensor([], dtype=torch.int64).to("cuda:0")
         try:
             bs, num_queries = outputs["pred_logits"].shape[:2]
 
@@ -117,8 +112,8 @@ class HungarianMatcher(nn.Module):
             indices = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices_pre]
         except Exception as e:
             print("Exception in targets:")
-            for t in targets:
-                print("\t t: {}".format(t))
+            print("Targets:", targets)
+            print("Outputs:", outputs)
             raise
         # Compute topk indices
         if return_topk:
