@@ -1,13 +1,18 @@
 #!/bin/bash
 
-MODEL_DIR=""
+NVINFER_FILE=""
+ONNX_FILENAME=""
 CLASSES=()
 RES=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model-dir)
-            MODEL_DIR="$2"
+        --nvinfer-file)
+            NVINFER_FILE="$2"
+            shift 2
+            ;;
+        --onnx-filename)
+            ONNX_FILE_NAME="$2"
             shift 2
             ;;
         --classes)
@@ -31,7 +36,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-MODEL_DIR=${MODEL_DIR%%/}
 CLASSES=$(IFS=';' ; echo "${CLASSES[*]}")
 RES=$(IFS=';' ; echo "${RES[*]}")
 
@@ -43,7 +47,7 @@ model-color-format=1
 # 0=Nearest, 1=Bilinear 2=VIC-5 Tap interpolation 3=VIC-10 Tap interpolation
 scaling-filter=3
 
-onnx-file=dfine_model.onnx
+onnx-file=$ONNX_FILE_NAME
 infer-dims=3;$RES
 
 [custom]
@@ -52,4 +56,4 @@ detector-type=2
 min_confidence = 0.5
 labels=$CLASSES
 report-labels=$CLASSES
-" > "$MODEL_DIR/object-config.txt"
+" > "$NVINFER_FILE"
