@@ -1,7 +1,9 @@
 import json
 import argparse
+import torch
+
 from engine.core import YAMLConfig
-from typing import List, Tuple
+from typing import Tuple
 
 def apply_ls_params(args: argparse.Namespace, cfg: YAMLConfig, stg1_epochs_perc: float = 1 / 6):
     # Set epochs
@@ -30,18 +32,40 @@ def apply_ls_params(args: argparse.Namespace, cfg: YAMLConfig, stg1_epochs_perc:
     return cfg
 
 def scale_bbox_coordinates(
-    bbox: List[float],
+    bbox: torch.Tensor,
     source_image_shape: Tuple[int, int],
     target_image_shape: Tuple[int, int],
-) -> List[float]:
+) -> torch.Tensor:
     """
-    Scale the given bbox from image coordinates of source_image_shape, to
-    image coordinates of target_image_shape.
+    Scale bbox coordinates tensor from source_image_shape to target_image_shape.
+
+    Args:
+        bbox: torch.Tensor of shape [4] with (xmin, ymin, xmax, ymax)
+        source_image_shape: (width, height) of original image
+        target_image_shape: (width, height) of target image
+
+    Returns:
+        Scaled bbox tensor shape [4]
     """
     factor_x = source_image_shape[0] / target_image_shape[0]
     factor_y = source_image_shape[1] / target_image_shape[1]
-    bbox[0] *= factor_x
-    bbox[1] *= factor_y
-    bbox[2] *= factor_x
-    bbox[3] *= factor_y
-    return bbox
+
+    # Scale bbox
+    scaled_bbox = bbox.clone()
+    scaled_bbox[0] = bbox[0] * factor_x
+    scaled_bbox[1] = bbox[1] * factor_y
+    scaled_bbox[2] = bbox[2] * factor_x
+    scaled_bbox[3] = bbox[3] * factor_y
+
+    return scaled_bbox
+
+def convert_bbox_format(bbox, from_format="xywh", to_format="xyxy"):
+    """Convert bounding box format between xywh and xyxy."""
+    x_min, y_min = bbox[0], bbox[1]
+    if from_format == "xywh" and to_format == "xyxy":
+        width, height = bbox[2], bbox[3]
+        return [x_min, y_min, x_min + width, y_min + height]
+    elif from_format == "xyxy" and to_format == "xywh":
+        x_max, y_max = bbox[2], bbox[3]
+        return [x_min, y_min, x_max - x_min, y_max - y_min]
+    return bbox  # Return unchanged if format is the same
