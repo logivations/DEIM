@@ -25,7 +25,7 @@ train_dataloader:
 
   shuffle: True
   total_batch_size: 32 # total batch size equals to 32 (4 * 8)
-  num_workers: 4
+  num_workers: 24
 
 
 val_dataloader:
@@ -36,4 +36,4 @@ val_dataloader:
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
   total_batch_size: 64
-  num_workers: 4
+  num_workers: 24
