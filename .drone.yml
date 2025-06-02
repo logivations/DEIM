@@ -20,7 +20,7 @@ platform:
 
 trigger:
   branch:
-    - master
+    - main
   event:
     - push
 
@@ -32,6 +32,8 @@ steps:
     image: plugins/docker:20.14
     environment:
       DOCKER_BUILDKIT: 1
+      GITHUB_TOKEN_DEIM:
+        from_secret: GITHUB_ACCESS_TOKEN
     settings:
       dockerfile: Dockerfile
       registry: quay.io
@@ -39,6 +41,8 @@ steps:
       privileged: true
       build_args:
         - BUILDKIT_INLINE_CACHE=1
+      build_args_from_env:
+        - GITHUB_TOKEN_DEIM
       cache_from: quay.io/logivations/ml_all:LS_dfine_latest
       tags:
         - LS_dfine_latest
@@ -81,6 +85,8 @@ steps:
     image: plugins/docker:20.14
     environment:
       DOCKER_BUILDKIT: 1
+      GITHUB_TOKEN_DEIM:
+        from_secret: GITHUB_ACCESS_TOKEN
     settings:
       dockerfile: Dockerfile
       registry: quay.io
@@ -88,6 +94,8 @@ steps:
       privileged: true
       build_args:
         - BUILDKIT_INLINE_CACHE=1
+      build_args_from_env:
+        - GITHUB_TOKEN_DEIM
       cache_from:
         - quay.io/logivations/ml_all:LS_dfine_latest
         - quay.io/logivations/ml_all:LS_dfine_pr${DRONE_PULL_REQUEST}
