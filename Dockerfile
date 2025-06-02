@@ -35,6 +35,6 @@ WORKDIR /DEIM
 
 #Configure Github Token
 ENV GITHUB_TOKEN_DEIM=$GITHUB_TOKEN_DEIM
-RUN git config --global url."https://${GITHUB_TOKEN_REGRESSION}@github.com/".insteadOf "https://github.com/"
+RUN git config --global url."https://${GITHUB_TOKEN_DEIM}@github.com/".insteadOf "https://github.com/"
 
 RUN pip install -r requirements.txt
