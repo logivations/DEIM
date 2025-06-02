@@ -26,4 +26,8 @@ RUN rm -rf /var/lib/apt/lists/*
 COPY . /DEIM
 WORKDIR /DEIM
 
+#Configure Github Token
+ENV GITHUB_TOKEN_DEIM=$GITHUB_TOKEN_DEIM
+RUN git config --global url."https://${GITHUB_TOKEN_REGRESSION}@github.com/".insteadOf "https://github.com/"
+
 RUN pip install -r requirements.txt
