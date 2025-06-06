@@ -153,10 +153,12 @@ class Inference:
                 bboxes.append(det)
             results.append({img_path: bboxes})
             self.fps_logger.end_record()
-        if self.coco_evaluator:
+        if self.coco_evaluator and self.coco_evaluator.evaluated():
             self.coco_evaluator.coco_eval['bbox'].print_function = self.print_function
             self.coco_evaluator.accumulate()
             self.coco_evaluator.summarize()
+        else:
+            self.print_function("No annotations/predictions found for evaluation.\n")
 
         if self.output_file:
             with open(self.output_file, "w") as f:

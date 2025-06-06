@@ -310,6 +310,11 @@ class CocoEvaluator(object):
             None
         )
 
+    def evaluated(self):
+        """"""
+        is_evaluated = [hasattr(coco_eval, "_evalImgs_cpp") for coco_eval in self.coco_eval.values()]
+        return all(is_evaluated)
+
 def convert_to_xywh(boxes):
     xmin, ymin, xmax, ymax = boxes.unbind(1)
     return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)
