@@ -9,6 +9,7 @@ Copyright (c) 2024 D-FINE authors. All Rights Reserved.
 import time
 import json
 import datetime
+from pathlib import Path
 
 import torch
 
@@ -174,20 +175,19 @@ class DetSolver(BaseSolver):
                 'n_parameters': n_parameters
             }
 
-            if self.output_dir and dist_utils.is_main_process():
-                with (self.output_dir / "log.txt").open("a") as f:
+            if dist_utils.is_main_process():
+                with Path("/result/log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
 
                 # for evaluation logs
                 if coco_evaluator is not None:
-                    (self.output_dir / 'eval').mkdir(exist_ok=True)
+                    Path("/result/eval").mkdir(exist_ok=True)
                     if "bbox" in coco_evaluator.coco_eval:
                         filenames = ['latest.pth']
                         if epoch % 50 == 0:
                             filenames.append(f'{epoch:03}.pth')
                         for name in filenames:
-                            torch.save(coco_evaluator.coco_eval["bbox"].eval,
-                                    self.output_dir / "eval" / name)
+                            torch.save(coco_evaluator.coco_eval["bbox"].eval, Path("/result/eval") / name)
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
