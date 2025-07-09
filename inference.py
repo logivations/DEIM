@@ -72,6 +72,7 @@ class Inference:
         self.model = self.init_model()
         self.coco_evaluator = None
         self.print_function = lambda x: None
+        self.metrics_file = None
         if annotation_file is not None:
             self.metrics_file = open(metrics_path, 'a')
             self.print_function = lambda x: self.metrics_file.write(x + '\n')
@@ -83,7 +84,7 @@ class Inference:
         self.run(threshold)
 
     def close(self):
-        self.metrics_file.close()
+        self.metrics_file and self.metrics_file.close()
 
     def init_model(self):
         if 'HGNetv2' in self.cfg.yaml_cfg:
