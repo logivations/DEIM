@@ -71,7 +71,7 @@ class Inference:
         self.fps_logger = FPSLogger(len(os.listdir(self.inf_dir)))
         self.model = self.init_model()
         self.coco_evaluator = None
-        self.print_function = lambda: None
+        self.print_function = lambda x: None
         if annotation_file is not None:
             self.metrics_file = open(metrics_path, 'a')
             self.print_function = lambda x: self.metrics_file.write(x + '\n')
