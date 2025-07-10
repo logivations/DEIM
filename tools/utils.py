@@ -2,6 +2,7 @@ import json
 import argparse
 import torch
 
+from itertools import islice
 from engine.core import YAMLConfig
 from typing import Tuple
 
@@ -69,3 +70,8 @@ def convert_bbox_format(bbox, from_format="xywh", to_format="xyxy"):
         x_max, y_max = bbox[2], bbox[3]
         return [x_min, y_min, x_max - x_min, y_max - y_min]
     return bbox  # Return unchanged if format is the same
+
+def chunks(iterable, batch_size):
+    iterator = iter(iterable)
+    for batch in iter(lambda: tuple(islice(iterator, batch_size)), ()):
+        yield batch

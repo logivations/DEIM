@@ -12,7 +12,7 @@ import sys
 import os
 
 from engine.data.dataset.coco_eval import CocoEvaluator
-from tools.utils import apply_ls_params, scale_bbox_coordinates
+from tools.utils import apply_ls_params, scale_bbox_coordinates, chunks
 from faster_coco_eval import COCO
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -134,27 +134,31 @@ class Inference:
         return [(label, bbox, score) for label, bbox, score in zip(labels[0], boxes[0], scores[0]) if
                           score > threshold]
 
-    def run(self, threshold=0.5):
+    def run(self, threshold=0.5, batch_size=64):
         results = []
-        for imn in os.listdir(self.inf_dir):
-            img_path = f"{self.inf_dir}/{imn}"
-            self.fps_logger.start_record()
-            labels, boxes, scores = self.process_image(img_path)
-            filtered_items = self.filter_detections(labels, boxes, scores, threshold)
-            im_pil = Image.open(img_path).convert('RGB')
-            bboxes = []
-            for label, bbox, score in filtered_items:
-                # x1, y1, x2, y2
-                bbox = scale_bbox_coordinates(bbox, im_pil.size, self.training_res)
-                if self.coco_evaluator is not None:
-                    img_id = self.coco_evaluator.get_image_id(imn)
-                    self.log_single_ann(img_id, label, bbox, score)
+        files = os.listdir(self.inf_dir)
+        for batch in chunks(files, batch_size):
+            with torch.no_grad():
+                for imn in batch:
+                    img_path = f"{self.inf_dir}/{imn}"
+                    self.fps_logger.start_record()
+                    labels, boxes, scores = self.process_image(img_path)
+                    filtered_items = self.filter_detections(labels, boxes, scores, threshold)
+                    im_pil = Image.open(img_path).convert('RGB')
+                    bboxes = []
+                    for label, bbox, score in filtered_items:
+                        # x1, y1, x2, y2
+                        bbox = scale_bbox_coordinates(bbox, im_pil.size, self.training_res)
+                        if self.coco_evaluator is not None:
+                            img_id = self.coco_evaluator.get_image_id(imn)
+                            self.log_single_ann(img_id, label, bbox, score)
 
-                # x1, x2, y1, y2 why?
-                det = list(map(float, [bbox[0], bbox[2], bbox[1], bbox[3], label, score]))
-                bboxes.append(det)
-            results.append({img_path: bboxes})
-            self.fps_logger.end_record()
+                        # x1, x2, y1, y2 why?
+                        det = list(map(float, [bbox[0], bbox[2], bbox[1], bbox[3], label, score]))
+                        bboxes.append(det)
+                    results.append({img_path: bboxes})
+                    self.fps_logger.end_record()
+            torch.cuda.empty_cache()
         if self.coco_evaluator and self.coco_evaluator.evaluated():
             self.coco_evaluator.coco_eval['bbox'].print_function = self.print_function
             self.coco_evaluator.accumulate()
