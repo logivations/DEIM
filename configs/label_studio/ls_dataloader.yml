@@ -3,7 +3,7 @@ train_dataloader:
   dataset:
     transforms:
       ops:
-        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomPhotometricDistort, brightness: [0.75, 1.4], p: 0.5}
         - {type: RandomZoomOut, fill: 0}
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
