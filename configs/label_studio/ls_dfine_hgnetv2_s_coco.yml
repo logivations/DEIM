@@ -34,16 +34,16 @@ optimizer:
   params:
     -
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.000025
+      lr: 0.0001
     -
       params: '^(?=.*backbone)(?=.*norm|bn).*$'
-      lr: 0.000025
+      lr: 0.0001
       weight_decay: 0.
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
       weight_decay: 0.
 
-  lr: 0.00005
+  lr: 0.0002
   betas: [0.9, 0.999]
   weight_decay: 0.0001
 
