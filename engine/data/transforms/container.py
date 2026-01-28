@@ -103,7 +103,13 @@ class Compose(T.Compose):
                 if type(transform).__name__ in policy_ops and cur_epoch >= policy_epoch:
                     pass
                 else:
-                    sample = transform(sample)
+                    try:
+                        sample = transform(sample)
+                    except NotImplementedError as e:
+                        print(f"NotImplementedError in transform: {type(transform).__name__}")
+                        print(f"Transform class: {type(transform)}")
+                        print(f"Sample types: img={type(sample[0])}, target keys={list(sample[1].keys()) if isinstance(sample[1], dict) else type(sample[1])}")
+                        raise
 
         return sample
 

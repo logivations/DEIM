@@ -1,16 +1,17 @@
 # It is important that cuda supports the video card architectures that are important to us:
+# NVIDIA GeForce RTX 5090               - sm_120 (Blackwell) - requires CUDA 12.8+
 # NVIDIA GeForce RTX 3060 / RTX 3060 Ti - sm_86
 # NVIDIA GeForce RTX 2080 Ti            - sm_75
 # NVIDIA A100-SXM4-40GB                 - sm_80
 # docker build -t quay.io/logivations/ml_all:LS_dfine_latest .
 
-ARG PYTORCH="2.0.1"
-ARG CUDA="11.7"
-ARG CUDNN="8"
+ARG PYTORCH="2.7.1"
+ARG CUDA="12.8"
+ARG CUDNN="9"
 
 FROM pytorch/pytorch:${PYTORCH}-cuda${CUDA}-cudnn${CUDNN}-devel
 
-ENV TORCH_CUDA_ARCH_LIST="6.0 6.1 7.0+PTX 8.6"
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;12.0+PTX"
 ENV TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
 ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 
