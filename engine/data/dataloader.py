@@ -90,25 +90,26 @@ def generate_scales(base_size, base_size_repeat):
     scales += [int(base_size * 1.25 / 32) * 32 - i * 32 for i in range(scale_repeat)]
     return scales
 
-
-@register() 
+@register()
 class BatchImageCollateFunction(BaseCollateFunction):
     def __init__(
-        self, 
-        stop_epoch=None, 
+        self,
+        stop_epoch=None,
         ema_restart_decay=0.9999,
         base_size=640,
         base_size_repeat=None,
         mixup_prob=0.0,
         mixup_epochs=[0, 0],
         data_vis=False,
-        vis_save='./vis_dataset/'
+        vis_save='./vis_dataset/',
+        gpu_interpolate=False,
     ) -> None:
         super().__init__()
         self.base_size = base_size
         self.scales = generate_scales(base_size, base_size_repeat) if base_size_repeat is not None else None
         self.stop_epoch = stop_epoch if stop_epoch is not None else 100000000
         self.ema_restart_decay = ema_restart_decay
+        self.gpu_interpolate = gpu_interpolate
         # FIXME Mixup
         self.mixup_prob, self.mixup_epochs = mixup_prob, mixup_epochs
         if self.mixup_prob > 0:
@@ -118,6 +119,8 @@ class BatchImageCollateFunction(BaseCollateFunction):
         if stop_epoch is not None:
             print("     ### Multi-scale Training until {} epochs ### ".format(self.stop_epoch))
             print("     ### Multi-scales@ {} ###        ".format(self.scales))
+        if gpu_interpolate:
+            print("     ### GPU Interpolate enabled - multi-scale resize will run on GPU ###")
         self.print_info_flag = True
         # self.interpolation = interpolation
 
@@ -178,17 +181,15 @@ class BatchImageCollateFunction(BaseCollateFunction):
         return images, targets
 
     def __call__(self, items):
+        """Collate batch of images and targets."""
         images = torch.cat([x[0][None] for x in items], dim=0)
         targets = [x[1] for x in items]
 
-        # Mixup
+        # Apply mixup if configured
         images, targets = self.apply_mixup(images, targets)
 
-        if self.scales is not None and self.epoch < self.stop_epoch:
-            # sz = random.choice(self.scales)
-            # sz = [sz] if isinstance(sz, int) else list(sz)
-            # VF.resize(inpt, sz, interpolation=self.interpolation)
-
+        # CPU interpolate (only if gpu_interpolate is disabled)
+        if self.scales is not None and self.epoch < self.stop_epoch and not self.gpu_interpolate:
             sz = random.choice(self.scales)
             images = F.interpolate(images, size=sz)
             if 'masks' in targets[0]:

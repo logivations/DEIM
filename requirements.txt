@@ -6,3 +6,4 @@ calflops==0.3.2
 transformers==4.49.0
 onnx==1.17.0
 onnxsim==0.4.36
+kornia==0.8.2

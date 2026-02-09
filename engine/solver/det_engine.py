@@ -9,10 +9,16 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 
 import sys
 import math
+import time
+import random
 from typing import Iterable
+from dataclasses import dataclass, field
+import gc
+import psutil
 
 import torch
 import torch.amp
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp.grad_scaler import GradScaler
 
@@ -21,13 +27,103 @@ from ..data import CocoEvaluator
 from ..misc import MetricLogger, SmoothedValue, dist_utils
 
 
+@dataclass
+class ProfilingMetrics:
+    """Structured profiling metrics for training loop."""
+    # Time accumulators (in seconds)
+    data_load: float = 0.0
+    data_transfer: float = 0.0  # includes GPU transforms + interpolate
+    forward: float = 0.0
+    criterion: float = 0.0
+    backward: float = 0.0
+    optimizer: float = 0.0
+    other: float = 0.0  # EMA, LR scheduling, logging
+
+    num_batches: int = 0
+
+    def update(self, **kwargs):
+        """Update metrics with new values."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, getattr(self, key) + value)
+
+    @property
+    def total_time(self) -> float:
+        return (self.data_load + self.data_transfer + self.forward +
+                self.criterion + self.backward + self.optimizer + self.other)
+
+    def get_averages(self) -> dict:
+        """Get average times per batch."""
+        n = max(self.num_batches, 1)
+        return {
+            'data_load': self.data_load / n,
+            'data_transfer': self.data_transfer / n,
+            'forward': self.forward / n,
+            'criterion': self.criterion / n,
+            'backward': self.backward / n,
+            'optimizer': self.optimizer / n,
+            'other': self.other / n,
+            'total': self.total_time / n,
+        }
+
+    def get_percentages(self) -> dict:
+        """Get percentage breakdown."""
+        total = max(self.total_time, 1e-9)
+        return {
+            'data_load': self.data_load / total * 100,
+            'data_transfer': self.data_transfer / total * 100,
+            'forward': self.forward / total * 100,
+            'criterion': self.criterion / total * 100,
+            'backward': self.backward / total * 100,
+            'optimizer': self.optimizer / total * 100,
+            'other': self.other / total * 100,
+        }
+
+    def log_to_tensorboard(self, writer: SummaryWriter, epoch: int):
+        """Log profiling metrics to tensorboard."""
+        if writer is None:
+            return
+        avgs = self.get_averages()
+        pcts = self.get_percentages()
+
+        # Log average times
+        for key, value in avgs.items():
+            writer.add_scalar(f'Profiling/time_{key}', value, epoch)
+
+        # Log percentages
+        for key, value in pcts.items():
+            writer.add_scalar(f'Profiling/pct_{key}', value, epoch)
+
+    def print_summary(self, epoch: int):
+        """Print formatted profiling summary."""
+        avgs = self.get_averages()
+        pcts = self.get_percentages()
+
+        print("\n" + "=" * 70)
+        print(f"[PROFILING] EPOCH {epoch} SUMMARY ({self.num_batches} batches)")
+        print("=" * 70)
+        print(f"  {'Stage':<20} {'Avg Time':>12} {'Percentage':>12}")
+        print("-" * 70)
+        print(f"  {'Data Load':<20} {avgs['data_load']:>10.4f}s {pcts['data_load']:>10.1f}%")
+        print(f"  {'Data Transfer+GPU':<20} {avgs['data_transfer']:>10.4f}s {pcts['data_transfer']:>10.1f}%")
+        print(f"  {'Forward Pass':<20} {avgs['forward']:>10.4f}s {pcts['forward']:>10.1f}%")
+        print(f"  {'Criterion (Loss)':<20} {avgs['criterion']:>10.4f}s {pcts['criterion']:>10.1f}%")
+        print(f"  {'Backward Pass':<20} {avgs['backward']:>10.4f}s {pcts['backward']:>10.1f}%")
+        print(f"  {'Optimizer Step':<20} {avgs['optimizer']:>10.4f}s {pcts['optimizer']:>10.1f}%")
+        print(f"  {'Other (EMA/LR)':<20} {avgs['other']:>10.4f}s {pcts['other']:>10.1f}%")
+        print("-" * 70)
+        print(f"  {'TOTAL':<20} {avgs['total']:>10.4f}s {100.0:>10.1f}%")
+        print(f"  {'Epoch Time':<20} {self.total_time:>10.2f}s")
+        print("=" * 70 + "\n")
+
+
 def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0, **kwargs):
     model.train()
     criterion.train()
     metric_logger = MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}')) # there shouldn't be fstring!
     header = 'Epoch: [{}]'.format(epoch)
 
     print_freq = kwargs.get('print_freq', 10)
@@ -36,67 +132,113 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
     ema :ModelEMA = kwargs.get('ema', None)
     scaler :GradScaler = kwargs.get('scaler', None)
     lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
+    gpu_transforms = kwargs.get('gpu_transforms', None)
+    multiscale_cfg = kwargs.get('multiscale_cfg', None)  # NEW: GPU multi-scale interpolate
 
     cur_iters = epoch * len(data_loader)
 
+    # Structured profiling metrics
+    profiling = ProfilingMetrics()
+    t_load_start = time.time()
+
     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        # Measure data loading time
+        t_data_load = time.time() - t_load_start
+        profiling.data_load += t_data_load
+
+        # Time data transfer to GPU + GPU transforms + interpolate
+        t_transfer_start = time.time()
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        # Apply GPU transforms (if enabled)
+        if gpu_transforms is not None:
+            samples, targets = gpu_transforms(samples, targets)
+
+        # Apply GPU multi-scale interpolate (if enabled)
+        if multiscale_cfg is not None and epoch < multiscale_cfg['stop_epoch']:
+            sz = random.choice(multiscale_cfg['scales'])
+            samples = F.interpolate(samples, size=sz)
+
+        t_data_transfer = time.time() - t_transfer_start
+        profiling.data_transfer += t_data_transfer
+
         global_step = epoch * len(data_loader) + i
         metas = dict(epoch=epoch, step=i, global_step=global_step, epoch_step=len(data_loader))
 
         if scaler is not None:
+            # Forward pass with AMP
+            t_forward_start = time.time()
             with torch.autocast(device_type=str(device), cache_enabled=True):
                 outputs = model(samples, targets=targets)
+            t_forward = time.time() - t_forward_start
+            profiling.forward += t_forward
 
             if torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any():
                 print("NaN or Inf detected")
-                print("Outputs:", outputs)
-                print("Targets:", targets)
                 outputs['pred_boxes'] = torch.nan_to_num(outputs['pred_boxes'], nan=0.0)
-
                 state = model.state_dict()
-                new_state = {}
-                for key, value in model.state_dict().items():
-                    # Replace 'module' with 'model' in each key
-                    new_key = key.replace('module.', '')
-                    # Add the updated key-value pair to the state dictionary
-                    state[new_key] = value
-                new_state['model'] = state
+                new_state = {'model': {k.replace('module.', ''): v for k, v in state.items()}}
                 dist_utils.save_on_master(new_state, "./NaN.pth")
 
+            # Criterion
+            t_criterion_start = time.time()
             with torch.autocast(device_type=str(device), enabled=False):
                 loss_dict = criterion(outputs, targets, **metas)
-
+            t_criterion = time.time() - t_criterion_start
+            profiling.criterion += t_criterion
             loss = sum(loss_dict.values())
+
+            # Backward
+            t_backward_start = time.time()
             scaler.scale(loss).backward()
-
-            for name, param in model.named_parameters():
-                if param.requires_grad and param.grad is None:
-                    print(f"[NO GRAD] {name}")
-
             if max_norm > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            t_backward = time.time() - t_backward_start
+            profiling.backward += t_backward
 
+            # Optimizer
+            t_optimizer_start = time.time()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            t_optimizer = time.time() - t_optimizer_start
+            profiling.optimizer += t_optimizer
 
         else:
+            # Forward pass without AMP
+            t_forward_start = time.time()
             outputs = model(samples, targets=targets)
+            t_forward = time.time() - t_forward_start
+            profiling.forward += t_forward
+
+            # Criterion
+            t_criterion_start = time.time()
             loss_dict = criterion(outputs, targets, **metas)
+            t_criterion = time.time() - t_criterion_start
+            profiling.criterion += t_criterion
 
-            loss : torch.Tensor = sum(loss_dict.values())
+            loss: torch.Tensor = sum(loss_dict.values())
             optimizer.zero_grad()
-            loss.backward()
 
+            # Backward
+            t_backward_start = time.time()
+            loss.backward()
             if max_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            t_backward = time.time() - t_backward_start
+            profiling.backward += t_backward
 
+            # Optimizer
+            t_optimizer_start = time.time()
             optimizer.step()
+            t_optimizer = time.time() - t_optimizer_start
+            profiling.optimizer += t_optimizer
 
-        # ema
+        # Other overhead (EMA, LR scheduling, logging)
+        t_other_start = time.time()
+
         if ema is not None:
             ema.update(model)
 
@@ -124,9 +266,28 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             for k, v in loss_dict_reduced.items():
                 writer.add_scalar(f'Loss/{k}', v.item(), global_step)
 
-    # gather the stats from all processes
+        t_other = time.time() - t_other_start
+        profiling.other += t_other
+        profiling.num_batches += 1
+
+        # Reset timer for next batch data loading
+        t_load_start = time.time()
+
+    # Gather stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+
+    # Cleanup
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Print and log profiling summary
+    if profiling.num_batches > 0:
+        profiling.print_summary(epoch)
+        if dist_utils.is_main_process():
+            profiling.log_to_tensorboard(writer, epoch)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
