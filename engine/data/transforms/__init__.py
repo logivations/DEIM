@@ -20,3 +20,8 @@ from ._transforms import (
 )
 from .container import Compose
 from .mosaic import Mosaic
+from .gpu_transforms import (
+    GPU_TRANSFORM_MAP,
+    GPUTransformPipeline,
+    build_gpu_transforms,
+)

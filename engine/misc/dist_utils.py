@@ -40,12 +40,15 @@ def setup_distributed(print_rank: int=0, print_method: str='builtin', seed: int=
         LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))
         WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 
+        # Set device before initializing process group
+        local_rank = LOCAL_RANK if LOCAL_RANK != -1 else 0
+        torch.cuda.set_device(local_rank)
+
         # torch.distributed.init_process_group(backend=backend, init_method='env://')
-        torch.distributed.init_process_group(init_method='env://')
-        torch.distributed.barrier()
+        torch.distributed.init_process_group(init_method='env://', device_id=torch.device(f'cuda:{local_rank}'))
+        torch.distributed.barrier(device_ids=[local_rank])
 
         rank = torch.distributed.get_rank()
-        torch.cuda.set_device(rank)
         torch.cuda.empty_cache()
         enabled_dist = True
         if get_rank() == print_rank:
@@ -155,13 +158,15 @@ def de_model(model):
 def warp_loader(loader, shuffle=False):
     if is_dist_available_and_initialized():
         sampler = DistributedSampler(loader.dataset, shuffle=shuffle)
-        loader = DataLoader(loader.dataset,
-                            loader.batch_size,
-                            sampler=sampler,
-                            drop_last=loader.drop_last,
-                            collate_fn=loader.collate_fn,
-                            pin_memory=loader.pin_memory,
-                            num_workers=loader.num_workers)
+        loader = DataLoader(
+            loader.dataset,
+            loader.batch_size,
+            sampler=sampler,
+            drop_last=loader.drop_last,
+            collate_fn=loader.collate_fn,
+            pin_memory=loader.pin_memory,
+            num_workers=loader.num_workers,
+        )
     return loader
 
 

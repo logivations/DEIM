@@ -6,6 +6,7 @@ Modified from D-FINE (https://github.com/Peterande/D-FINE)
 Copyright (c) 2024 D-FINE authors. All Rights Reserved.
 """
 
+import time
 import torch
 import torch.nn as nn
 
@@ -15,6 +16,10 @@ import torchvision.transforms.v2 as T
 from typing import Any, Dict, List, Optional
 
 from ._transforms import EmptyTransform
+from .gpu_transforms import (
+    build_gpu_transforms,
+    KORNIA_AVAILABLE,
+)
 from ...core import register, GLOBAL_CONFIG
 torchvision.disable_beta_transforms_warning()
 import random
@@ -22,7 +27,8 @@ import random
 
 @register()
 class Compose(T.Compose):
-    def __init__(self, ops, policy=None, mosaic_prob=-0.1) -> None:
+    def __init__(self, ops, gpu_ops=None, policy=None, mosaic_prob=-0.1) -> None:
+        # Build CPU transforms from ops
         transforms = []
         if ops is not None:
             for op in ops:
@@ -39,7 +45,7 @@ class Compose(T.Compose):
                 else:
                     raise ValueError('')
         else:
-            transforms =[EmptyTransform(), ]
+            transforms = [EmptyTransform(), ]
 
         super().__init__(transforms=transforms)
 
@@ -47,12 +53,26 @@ class Compose(T.Compose):
         if policy is None:
             policy = {'name': 'default'}
         else:
-            if self.mosaic_prob > 0: 
+            if self.mosaic_prob > 0:
                 print("     ### Mosaic with Prob.@{} and ZoomOut/IoUCrop existed ### ".format(self.mosaic_prob))
             print("     ### ImgTransforms Epochs: {} ### ".format(policy['epoch']))
             print('     ### Policy_ops@{} ###'.format(policy['ops']))
         self.global_samples = 0
         self.policy = policy
+
+        # Build GPU transform pipeline from explicit gpu_ops
+        self._gpu_pipeline = None
+        if gpu_ops:
+            if not KORNIA_AVAILABLE:
+                raise ImportError(
+                    "Kornia is required for GPU transforms. Install with: pip install kornia"
+                )
+            self._gpu_pipeline = build_gpu_transforms(gpu_ops)
+            print(f"     ### GPU Pipeline: {[op['type'] for op in gpu_ops]} ###")
+
+    def get_gpu_pipeline(self):
+        """Return the GPU transform pipeline for use in training loop."""
+        return self._gpu_pipeline
 
     def forward(self, *inputs: Any) -> Any:
         return self.get_forward(self.policy['name'])(*inputs)
@@ -91,10 +111,10 @@ class Compose(T.Compose):
                     pass
                 else:
                     # Using Mosaic for [policy_epoch[0], policy_epoch[1]] with probability
-                    if (type(transform).__name__ == 'Mosaic' and not with_mosaic):      
+                    if (type(transform).__name__ == 'Mosaic' and not with_mosaic):
                         pass
                     # Mosaic and Zoomout/IoUCrop can not be co-existed in the same sample
-                    elif (type(transform).__name__ == 'RandomZoomOut' or type(transform).__name__ == 'RandomIoUCrop') and with_mosaic:      
+                    elif (type(transform).__name__ == 'RandomZoomOut' or type(transform).__name__ == 'RandomIoUCrop') and with_mosaic:
                         pass
                     else:
                         sample = transform(sample)
