@@ -12,7 +12,6 @@ train_dataloader:
         - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
       gpu_ops:  # GPU transforms (Kornia) - run after .to(device) ~ -10m per epoch
         - {type: RandomPhotometricDistort, p: 0.5}
-        - {type: RandomHorizontalFlip, p: 0.5}
       policy:
         name: stop_epoch
         epoch: 72 # epoch in [71, ~) stop `ops`
