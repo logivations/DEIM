@@ -81,6 +81,15 @@ class DetSolver(BaseSolver):
             }
             print(f"     ### GPU Interpolate enabled - scales: {collate_fn.scales} ###")
 
+        # Pass resolved configs from dataset to criterion (names → IDs)
+        dataset = self.train_dataloader.dataset
+        if hasattr(dataset, 'ignore_tags_resolved'):
+            self.criterion.ignore_tags_resolved = dataset.ignore_tags_resolved
+            print(f"     ### Ignore tags resolved: {self.criterion.ignore_tags_resolved} ###")
+        if hasattr(dataset, 'crowd_suppress_classes_resolved'):
+            self.criterion.crowd_suppress_classes = dataset.crowd_suppress_classes_resolved
+            print(f"     ### Crowd suppress classes resolved: {self.criterion.crowd_suppress_classes} ###")
+
         for epoch in range(start_epoch, args.epoches):
 
             self.train_dataloader.set_epoch(epoch)

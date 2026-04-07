@@ -16,6 +16,7 @@ import copy
 
 from .dfine_utils import bbox2distance
 from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
+from .utils import filter_crowd_targets
 from ..misc.dist_utils import get_world_size, is_dist_available_and_initialized
 from ..core import register
 
@@ -65,6 +66,10 @@ class DEIMCriterion(nn.Module):
         self.mal_alpha = mal_alpha
         self.use_uni_set = use_uni_set
 
+        # Filled by solver from dataset-resolved configs (class names → IDs)
+        self.crowd_suppress_classes = {}  # {crowd_cat_id: [suppress_cat_ids]}
+        self.ignore_tags_resolved = {}    # {tag_name: [cat_ids]}
+
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
@@ -75,6 +80,10 @@ class DEIMCriterion(nn.Module):
         target_classes[idx] = target_classes_o
         target = F.one_hot(target_classes, num_classes=self.num_classes+1)[..., :-1]
         loss = torchvision.ops.sigmoid_focal_loss(src_logits, target, self.alpha, self.gamma, reduction='none')
+        
+        # Apply custom suppresions for crowd and ignore classes
+        loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
+
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
 
         return {'loss_focal': loss}
@@ -105,6 +114,10 @@ class DEIMCriterion(nn.Module):
         weight = self.alpha * pred_score.pow(self.gamma) * (1 - target) + target_score
 
         loss = F.binary_cross_entropy_with_logits(src_logits, target_score, weight=weight, reduction='none')
+        
+        # Apply custom suppresions for crowd and ignore classes
+        loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
+
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {'loss_vfl': loss}
 
@@ -139,6 +152,10 @@ class DEIMCriterion(nn.Module):
 
         # print(" ### DEIM-gamma{}-alpha{} ### ".format(self.gamma, self.mal_alpha))
         loss = F.binary_cross_entropy_with_logits(src_logits, target_score, weight=weight, reduction='none')
+
+        # Apply custom suppresions for crowd and ignore classes
+        loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
+        
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {'loss_mal': loss}
 
@@ -251,6 +268,118 @@ class DEIMCriterion(nn.Module):
         self.fgl_targets, self.fgl_targets_dn = None, None
         self.own_targets, self.own_targets_dn = None, None
         self.num_pos, self.num_neg = None, None
+        self._crowd_targets = None
+        self._ignore_tag_mask = None 
+
+    def _apply_custom_suppresion(self, loss, outputs, indices, idx, src_logits):
+        """Apply crowd and ignore-tag FP suppression to classification loss.
+
+        Two independent suppression mechanisms are applied sequentially:
+        1. Crowd suppression: zeros out loss for unmatched predictions that overlap
+        (IoU > 0.5) with iscrowd regions, only for class IDs specified in
+        crowd_suppress_classes config.
+        2. Ignore-tag suppression: zeros out loss for unmatched predictions on
+        classes that were not annotated on this image (e.g. pallets_annotated=false
+        suppresses all pallet-related class losses).
+
+        Both only affect unmatched queries — matched predictions keep their full loss.
+
+        Args:
+            loss (Tensor): Classification loss tensor [bs, num_queries, num_classes].
+            outputs (dict): Model outputs containing 'pred_boxes' [bs, num_queries, 4]
+                used for IoU computation with crowd boxes.
+            indices (list[tuple]): Hungarian matching result — list of (pred_idx, target_idx)
+                tuples per batch element.
+            idx (tuple): Permuted source indices (batch_idx, query_idx) from
+                _get_src_permutation_idx(indices), identifying matched queries.
+            src_logits (Tensor): Predicted logits [bs, num_queries, num_classes],
+                used for shape/device reference.
+
+        Returns:
+            Tensor: Modified loss with suppressed entries zeroed out,
+                same shape [bs, num_queries, num_classes].
+        """
+        # Suppress FP penalty for unmatched predictions overlapping crowd regions
+        if self._crowd_targets is not None and self.crowd_suppress_classes:
+            crowd_mask = self._get_crowd_suppression_mask(outputs, self._crowd_targets, indices)
+            loss = loss * (~crowd_mask).float()
+
+        # Suppress FP for classes not annotated on this image (ignore tags)
+        if (
+            self._ignore_tag_mask is not None 
+            and self._ignore_tag_mask.shape[-1] == src_logits.shape[-1] 
+            and self.ignore_tags_resolved
+        ):
+            ignore_mask = self._ignore_tag_mask.unsqueeze(1)  # [bs, 1, num_classes]
+            matched_queries = torch.zeros(src_logits.shape[:2], dtype=torch.bool, device=src_logits.device)
+            matched_queries[idx] = True
+            unmatched = ~matched_queries.unsqueeze(-1)  # [bs, num_queries, 1]
+            loss = loss * (~(ignore_mask & unmatched)).float()
+
+        return loss
+
+
+    def _get_crowd_suppression_mask(self, outputs, crowd_targets, indices):
+        """Mask [bs, num_queries, num_classes] for unmatched predictions overlapping crowd regions.
+        These predictions should NOT be penalized as false positives in cls loss.
+        """
+        bs, num_queries, num_classes = outputs['pred_logits'].shape
+        device = outputs['pred_logits'].device
+        suppress = torch.zeros(bs, num_queries, num_classes, dtype=torch.bool, device=device)
+
+        # Build set of matched predictions (already assigned to non-crowd targets)
+        matched = torch.zeros(bs, num_queries, dtype=torch.bool, device=device)
+        for i, (src_idx, _) in enumerate(indices):
+            matched[i, src_idx] = True
+
+        for i, ct in enumerate(crowd_targets):
+            if len(ct['boxes']) == 0:
+                continue
+            
+            pred_boxes = box_cxcywh_to_xyxy(outputs['pred_boxes'][i])
+            crowd_boxes = box_cxcywh_to_xyxy(ct['boxes'])
+            iou_matrix, _ = box_iou(pred_boxes, crowd_boxes)
+            
+            # Unmatched querries overlapping ANY crowd box (IoU > 0.5)
+            max_iou = iou_matrix.max(dim=1)[0]
+            overlapping = (~matched[i]) & (max_iou > 0.5)
+            
+            if not overlapping.any():
+                continue
+            
+            # Collect suppressed class IDs from all crowd boxes on this image
+            suppress_cls = set()
+            for j in range(len(ct["boxes"])):
+                crowd_label = ct["labels"][j].item()
+                if crowd_label in self.crowd_suppress_classes:
+                    suppress_cls.update(self.crowd_suppress_classes[crowd_label])
+                    
+            for cls_id in suppress_cls:
+                suppress[i, overlapping, cls_id] = True
+        
+        return suppress # [bs, num_queries, num_classes]
+
+    def _get_ignore_tag_mask(self, targets):
+        """Build [bs, num_classes] mask — True = suppress FP loss for this class/image.
+        When a tag (e.g. pallets_annotated) is false/missing for an image, all associated
+        class IDs have their FP classification loss zeroed on that image.
+        """
+        bs = len(targets)
+        device = targets[0]['labels'].device
+        mask = torch.zeros(bs, self.num_classes, dtype=torch.bool, device=device)
+        
+        for tag_name, class_ids in self.ignore_tags_resolved.items():
+            valid_ids = [c for c in class_ids if c < self.num_classes]
+            if not valid_ids:
+                print(f"Warning! No valid ids for ignore tag in {self.ignore_tags_resolved=}")
+                continue
+            
+            cls_tensor = torch.tensor(valid_ids, device=device)
+            for i, t in enumerate(targets):
+                if tag_name in t and t[tag_name].item() == 0: # tag=false -> suppress
+                    mask[i, cls_tensor] = True
+
+        return mask if mask.any() else None
 
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
@@ -270,11 +399,15 @@ class DEIMCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
+        # Split crowd and non-crowd targets; only non-crowd participate in matching/loss
+        filtered_targets, crowd_targets = filter_crowd_targets(targets)
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)['indices']
+        indices = self.matcher(outputs_without_aux, filtered_targets)['indices']
         self._clear_cache()
+        self._crowd_targets = crowd_targets  # restore after _clear_cache
+        self._ignore_tag_mask = self._get_ignore_tag_mask(targets)  # original targets, not filtered
 
         # Get the matching union set across all decoder layers.
         if 'aux_outputs' in outputs:
@@ -283,11 +416,11 @@ class DEIMCriterion(nn.Module):
             if 'pre_outputs' in outputs:
                 aux_outputs_list = outputs['aux_outputs'] + [outputs['pre_outputs']]
             for i, aux_outputs in enumerate(aux_outputs_list):
-                indices_aux = self.matcher(aux_outputs, targets)['indices']
+                indices_aux = self.matcher(aux_outputs, filtered_targets)['indices']
                 cached_indices.append(indices_aux)
                 indices_aux_list.append(indices_aux)
             for i, aux_outputs in enumerate(outputs['enc_aux_outputs']):
-                indices_enc = self.matcher(aux_outputs, targets)['indices']
+                indices_enc = self.matcher(aux_outputs, filtered_targets)['indices']
                 cached_indices_enc.append(indices_enc)
                 indices_aux_list.append(indices_enc)
             indices_go = self._get_go_indices(indices, indices_aux_list)
@@ -301,7 +434,8 @@ class DEIMCriterion(nn.Module):
             assert 'aux_outputs' in outputs, ''
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
-        num_boxes = sum(len(t["labels"]) for t in targets)
+        # Only count non-crowd targets
+        num_boxes = sum(len(t["labels"]) for t in filtered_targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_available_and_initialized():
             torch.distributed.all_reduce(num_boxes)
@@ -314,8 +448,8 @@ class DEIMCriterion(nn.Module):
             use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
             indices_in = indices_go if use_uni_set else indices
             num_boxes_in = num_boxes_go if use_uni_set else num_boxes
-            meta = self.get_loss_meta_info(loss, outputs, targets, indices_in)
-            l_dict = self.get_loss(loss, outputs, targets, indices_in, num_boxes_in, **meta)
+            meta = self.get_loss_meta_info(loss, outputs, filtered_targets, indices_in)
+            l_dict = self.get_loss(loss, outputs, filtered_targets, indices_in, num_boxes_in, **meta)
             l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
             losses.update(l_dict)
 
@@ -329,8 +463,8 @@ class DEIMCriterion(nn.Module):
                     use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
                     indices_in = indices_go if use_uni_set else cached_indices[i]
                     num_boxes_in = num_boxes_go if use_uni_set else num_boxes
-                    meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices_in, num_boxes_in, **meta)
+                    meta = self.get_loss_meta_info(loss, aux_outputs, filtered_targets, indices_in)
+                    l_dict = self.get_loss(loss, aux_outputs, filtered_targets, indices_in, num_boxes_in, **meta)
 
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + f'_aux_{i}': v for k, v in l_dict.items()}
@@ -344,8 +478,8 @@ class DEIMCriterion(nn.Module):
                 use_uni_set = self.use_uni_set and (loss in ['boxes', 'local'])
                 indices_in = indices_go if use_uni_set else cached_indices[-1]
                 num_boxes_in = num_boxes_go if use_uni_set else num_boxes
-                meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
-                l_dict = self.get_loss(loss, aux_outputs, targets, indices_in, num_boxes_in, **meta)
+                meta = self.get_loss_meta_info(loss, aux_outputs, filtered_targets, indices_in)
+                l_dict = self.get_loss(loss, aux_outputs, filtered_targets, indices_in, num_boxes_in, **meta)
 
                 l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                 l_dict = {k + '_pre': v for k, v in l_dict.items()}
@@ -358,11 +492,11 @@ class DEIMCriterion(nn.Module):
             if class_agnostic:
                 orig_num_classes = self.num_classes
                 self.num_classes = 1
-                enc_targets = copy.deepcopy(targets)
+                enc_targets = copy.deepcopy(filtered_targets)
                 for t in enc_targets:
                     t['labels'] = torch.zeros_like(t["labels"])
             else:
-                enc_targets = targets
+                enc_targets = filtered_targets
 
             for i, aux_outputs in enumerate(outputs['enc_aux_outputs']):
                 for loss in self.losses:
@@ -382,7 +516,7 @@ class DEIMCriterion(nn.Module):
         # In case of cdn auxiliary losses.
         if 'dn_outputs' in outputs:
             assert 'dn_meta' in outputs, ''
-            indices_dn = self.get_cdn_matched_indices(outputs['dn_meta'], targets)
+            indices_dn = self.get_cdn_matched_indices(outputs['dn_meta'], filtered_targets)
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
 
             for i, aux_outputs in enumerate(outputs['dn_outputs']):
@@ -390,8 +524,8 @@ class DEIMCriterion(nn.Module):
                     aux_outputs['is_dn'] = True
                     aux_outputs['up'], aux_outputs['reg_scale'] = outputs['up'], outputs['reg_scale']
                 for loss in self.losses:
-                    meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_dn)
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices_dn, dn_num_boxes, **meta)
+                    meta = self.get_loss_meta_info(loss, aux_outputs, filtered_targets, indices_dn)
+                    l_dict = self.get_loss(loss, aux_outputs, filtered_targets, indices_dn, dn_num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + f'_dn_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
@@ -400,8 +534,8 @@ class DEIMCriterion(nn.Module):
             if 'dn_pre_outputs' in outputs:
                 aux_outputs = outputs['dn_pre_outputs']
                 for loss in self.losses:
-                    meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_dn)
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices_dn, dn_num_boxes, **meta)
+                    meta = self.get_loss_meta_info(loss, aux_outputs, filtered_targets, indices_dn)
+                    l_dict = self.get_loss(loss, aux_outputs, filtered_targets, indices_dn, dn_num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + '_dn_pre': v for k, v in l_dict.items()}
                     losses.update(l_dict)

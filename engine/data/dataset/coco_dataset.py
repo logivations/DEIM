@@ -28,12 +28,17 @@ __all__ = ['CocoDetection']
 @register()
 class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     __inject__ = ['transforms', ]
-    __share__ = ['remap_mscoco_category']
+    __share__ = ['remap_mscoco_category', 'ignore_tags', 'crowd_suppress_classes']
 
-    def __init__(self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False):
+    def __init__(self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False, ignore_tags=None, crowd_suppress_classes=None):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
-        self.prepare = ConvertCocoPolysToMask(return_masks)
+        self.ignore_tags_cfg = ignore_tags or {}
+
+        self.prepare = ConvertCocoPolysToMask(
+            return_masks,
+            ignore_tag_names=list(self.ignore_tags_cfg.keys())
+        )
         self.img_folder = img_folder
         self.ann_file = ann_file
         self.return_masks = return_masks
@@ -44,6 +49,29 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
             id_ for id_ in self.coco.getImgIds()
             if os.path.exists(os.path.join(self.root, self.coco.loadImgs(id_)[0]['file_name']))
         ]
+        
+        # Resolve ignore class names -> category IDs for ignore_tags
+        cat_name2id = {cat['name']: cat['id'] for cat in self.categories}
+
+        self.ignore_tags_resolved = {}
+        for tag_name, class_names in self.ignore_tags_cfg.items():
+            unknown = [n for n in class_names if n not in cat_name2id]
+            if unknown:
+                print(f"Warning: ignore_tags classes {unknown} not found in dataset categories")
+            self.ignore_tags_resolved[tag_name] = [cat_name2id[n] for n in class_names if n in cat_name2id]
+
+        # Resolve crowd class names -> category IDs for crowd_suppress_classes
+        crowd_suppress_cfg = crowd_suppress_classes or {}
+        self.crowd_suppress_classes_resolved = {}
+        for crowd_name, suppress_names in crowd_suppress_cfg.items():
+            if crowd_name not in cat_name2id:
+                print(f"Warning: crowd_suppress_classes key '{crowd_name}' not found in dataset categories")
+                continue
+            unknown = [n for n in suppress_names if n not in cat_name2id]
+            if unknown:
+                print(f"Warning: crowd_suppress_classes values {unknown} not found in dataset categories")
+            crowd_id = cat_name2id[crowd_name]
+            self.crowd_suppress_classes_resolved[crowd_id] = [cat_name2id[n] for n in suppress_names if n in cat_name2id]
 
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
@@ -115,8 +143,9 @@ def convert_coco_poly_to_mask(segmentations, height, width):
 
 
 class ConvertCocoPolysToMask(object):
-    def __init__(self, return_masks=False):
+    def __init__(self, return_masks=False, ignore_tag_names=None):
         self.return_masks = return_masks
+        self.ignore_tag_names = ignore_tag_names or []
 
     def __call__(self, image: Image.Image, target, **kwargs):
         w, h = image.size
@@ -126,7 +155,8 @@ class ConvertCocoPolysToMask(object):
 
         anno = target["annotations"]
 
-        anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
+        # Keep all annotations including iscrowd — crowd filtering handled in criterion
+        anno = [obj for obj in anno if obj.get('iscrowd', 0) in (0, 1)]
 
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
@@ -174,12 +204,20 @@ class ConvertCocoPolysToMask(object):
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
-        iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])
+        iscrowd = torch.tensor([obj.get("iscrowd", 0) for obj in anno])
         target["area"] = area[keep]
         target["iscrowd"] = iscrowd[keep]
 
         target["orig_size"] = torch.as_tensor([int(w), int(h)])
         # target["size"] = torch.as_tensor([int(w), int(h)])
+
+        # Extract ignore tag fields (image-level flags from annotations)
+        for tag_name in self.ignore_tag_names:
+            if anno and tag_name in anno[0]:
+                tag_val = int(anno[0][tag_name]) # all annos on image have same value
+            else:
+                tag_val = 0  # default: tag missing = NOT annotated (suppress FP)
+            target[tag_name] = torch.tensor(tag_val, dtype=torch.int64)  # 0-dim scalar
 
         return image, target
 
