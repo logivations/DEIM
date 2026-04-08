@@ -92,7 +92,8 @@ class DetSolver(BaseSolver):
             # Criterion: full mapping {source_id: [suppress_ids]}
             self.criterion.suppress_classes = resolved
             # Decoder: set of source IDs for denoising filter
-            self.model.decoder.suppress_source_ids = suppress_source_ids
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+            model.decoder.suppress_source_ids = suppress_source_ids
             print(f"     ### Suppress classes resolved: {resolved} ###")
 
         for epoch in range(start_epoch, args.epoches):
