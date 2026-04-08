@@ -164,7 +164,6 @@ class ConvertCocoPolysToMask(object):
 
         anno = target["annotations"]
 
-        # Keep all annotations including iscrowd — crowd filtering handled in criterion
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
 
         boxes = [obj["bbox"] for obj in anno]

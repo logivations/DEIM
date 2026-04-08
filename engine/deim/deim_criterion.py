@@ -81,7 +81,7 @@ class DEIMCriterion(nn.Module):
         target = F.one_hot(target_classes, num_classes=self.num_classes+1)[..., :-1]
         loss = torchvision.ops.sigmoid_focal_loss(src_logits, target, self.alpha, self.gamma, reduction='none')
         
-        # Apply custom suppresions for crowd and ignore classes
+        # Apply custom suppressions for suppress-classes and ignore tags
         loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
 
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
@@ -115,7 +115,7 @@ class DEIMCriterion(nn.Module):
 
         loss = F.binary_cross_entropy_with_logits(src_logits, target_score, weight=weight, reduction='none')
         
-        # Apply custom suppresions for crowd and ignore classes
+        # Apply custom suppressions for suppress-classes and ignore tags
         loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
 
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
@@ -153,7 +153,7 @@ class DEIMCriterion(nn.Module):
         # print(" ### DEIM-gamma{}-alpha{} ### ".format(self.gamma, self.mal_alpha))
         loss = F.binary_cross_entropy_with_logits(src_logits, target_score, weight=weight, reduction='none')
 
-        # Apply custom suppresions for crowd and ignore classes
+        # Apply custom suppressions for suppress-classes and ignore tags
         loss = self._apply_custom_suppresion(loss, outputs, indices, idx, src_logits)
         
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
@@ -272,22 +272,22 @@ class DEIMCriterion(nn.Module):
         self._ignore_tag_mask = None 
 
     def _apply_custom_suppresion(self, loss, outputs, indices, idx, src_logits):
-        """Apply crowd and ignore-tag FP suppression to classification loss.
+        """Apply suppress-classes and ignore-tag FP suppression to classification loss.
 
         Two independent suppression mechanisms are applied sequentially:
-        1. Crowd suppression: zeros out loss for unmatched predictions that overlap
-        (IoU > 0.5) with iscrowd regions, only for class IDs specified in
-        crowd_suppress_classes config.
-        2. Ignore-tag suppression: zeros out loss for unmatched predictions on
-        classes that were not annotated on this image (e.g. pallets_annotated=false
-        suppresses all pallet-related class losses).
+        1. Suppress-classes: zeros out loss for unmatched predictions that overlap
+           (IoF > 0.5) with suppress-source regions (e.g. pallet_bulk zones),
+           only for class IDs specified in suppress_classes config.
+        2. Ignore-tag: zeros out loss for unmatched predictions on classes that
+           were not annotated on this image (e.g. pallets_annotated=false suppresses
+           all pallet-related class losses).
 
         Both only affect unmatched queries — matched predictions keep their full loss.
 
         Args:
             loss (Tensor): Classification loss tensor [bs, num_queries, num_classes].
             outputs (dict): Model outputs containing 'pred_boxes' [bs, num_queries, 4]
-                used for IoU computation with crowd boxes.
+                used for IoF computation with suppress-source boxes.
             indices (list[tuple]): Hungarian matching result — list of (pred_idx, target_idx)
                 tuples per batch element.
             idx (tuple): Permuted source indices (batch_idx, query_idx) from
@@ -299,15 +299,15 @@ class DEIMCriterion(nn.Module):
             Tensor: Modified loss with suppressed entries zeroed out,
                 same shape [bs, num_queries, num_classes].
         """
-        # Suppress FP penalty for unmatched predictions overlapping crowd regions
+        # Suppress FP penalty for unmatched predictions overlapping suppress-source regions
         if self._suppress_source_targets is not None and self.suppress_classes:
             suppress_mask = self._get_suppress_mask(outputs, self._suppress_source_targets, indices)
             loss = loss * (~suppress_mask).float()
 
         # Suppress FP for classes not annotated on this image (ignore tags)
         if (
-            self._ignore_tag_mask is not None 
-            and self._ignore_tag_mask.shape[-1] == src_logits.shape[-1] 
+            self._ignore_tag_mask is not None
+            and self._ignore_tag_mask.shape[-1] == src_logits.shape[-1]
             and self.ignore_tags_resolved
         ):
             ignore_mask = self._ignore_tag_mask.unsqueeze(1)  # [bs, 1, num_classes]
@@ -318,46 +318,45 @@ class DEIMCriterion(nn.Module):
 
         return loss
 
-
-    def _get_crowd_suppression_mask(self, outputs, crowd_targets, indices):
-        """Mask [bs, num_queries, num_classes] for unmatched predictions overlapping crowd regions.
-        These predictions should NOT be penalized as false positives in cls loss.
+    def _get_suppress_mask(self, outputs, suppress_source_targets, indices):
+        """Mask [bs, num_queries, num_classes] — suppress FP cls loss for unmatched
+        predictions overlapping suppress-source areas (e.g. pallet_bulk zones).
         """
         bs, num_queries, num_classes = outputs['pred_logits'].shape
         device = outputs['pred_logits'].device
         suppress = torch.zeros(bs, num_queries, num_classes, dtype=torch.bool, device=device)
 
-        # Build set of matched predictions (already assigned to non-crowd targets)
+        # Build set of matched predictions
         matched = torch.zeros(bs, num_queries, dtype=torch.bool, device=device)
         for i, (src_idx, _) in enumerate(indices):
             matched[i, src_idx] = True
 
-        for i, ct in enumerate(crowd_targets):
-            if len(ct['boxes']) == 0:
+        for i, st in enumerate(suppress_source_targets):
+            if len(st['boxes']) == 0:
                 continue
-            
+
             pred_boxes = box_cxcywh_to_xyxy(outputs['pred_boxes'][i])
-            crowd_boxes = box_cxcywh_to_xyxy(ct['boxes'])
-            iof_matrix = box_iof(pred_boxes, crowd_boxes)
-            
-            # Unmatched querries overlapping ANY crowd box (IoF > 0.5)
+            source_boxes = box_cxcywh_to_xyxy(st['boxes'])
+            iof_matrix = box_iof(pred_boxes, source_boxes)
+
+            # Unmatched queries overlapping ANY suppress-source box (IoF > 0.5)
             max_iof = iof_matrix.max(dim=1)[0]
             overlapping = (~matched[i]) & (max_iof > 0.5)
-            
+
             if not overlapping.any():
                 continue
-            
-            # Collect suppressed class IDs from all crowd boxes on this image
+
+            # Collect suppressed class IDs from all suppress-source boxes on this image
             suppress_cls = set()
-            for j in range(len(ct["boxes"])):
-                crowd_label = ct["labels"][j].item()
-                if crowd_label in self.crowd_suppress_classes:
-                    suppress_cls.update(self.crowd_suppress_classes[crowd_label])
-                    
+            for j in range(len(st['boxes'])):
+                label = st['labels'][j].item()
+                if label in self.suppress_classes:
+                    suppress_cls.update(self.suppress_classes[label])
+
             for cls_id in suppress_cls:
                 suppress[i, overlapping, cls_id] = True
-        
-        return suppress # [bs, num_queries, num_classes]
+
+        return suppress
 
     def _get_ignore_tag_mask(self, targets):
         """Build [bs, num_classes] mask — True = suppress FP loss for this class/image.
@@ -399,7 +398,7 @@ class DEIMCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        # Split crowd and non-crowd targets; only non-crowd participate in matching/loss
+        # Split targets: suppress-source classes excluded from matching/loss
         suppress_source_ids = set(self.suppress_classes.keys()) if self.suppress_classes else set()
         filtered_targets, suppress_source_targets = filter_suppress_source_targets(targets, suppress_source_ids)
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
@@ -435,7 +434,7 @@ class DEIMCriterion(nn.Module):
             assert 'aux_outputs' in outputs, ''
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
-        # Only count non-crowd targets
+        # Only count non-suppress-source targets
         num_boxes = sum(len(t["labels"]) for t in filtered_targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_available_and_initialized():
