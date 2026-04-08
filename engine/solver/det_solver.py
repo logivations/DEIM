@@ -86,9 +86,14 @@ class DetSolver(BaseSolver):
         if hasattr(dataset, 'ignore_tags_resolved'):
             self.criterion.ignore_tags_resolved = dataset.ignore_tags_resolved
             print(f"     ### Ignore tags resolved: {self.criterion.ignore_tags_resolved} ###")
-        if hasattr(dataset, 'crowd_suppress_classes_resolved'):
-            self.criterion.crowd_suppress_classes = dataset.crowd_suppress_classes_resolved
-            print(f"     ### Crowd suppress classes resolved: {self.criterion.crowd_suppress_classes} ###")
+        if hasattr(dataset, 'suppress_classes_resolved'):
+            resolved = dataset.suppress_classes_resolved
+            suppress_source_ids = set(resolved.keys())
+            # Criterion: full mapping {source_id: [suppress_ids]}
+            self.criterion.suppress_classes = resolved
+            # Decoder: set of source IDs for denoising filter
+            self.model.decoder.suppress_source_ids = suppress_source_ids
+            print(f"     ### Suppress classes resolved: {resolved} ###")
 
         for epoch in range(start_epoch, args.epoches):
 

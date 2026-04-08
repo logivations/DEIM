@@ -6,9 +6,9 @@ ignore_tags:
   pallets_annotated: ['pallet', 'pallet_bulk', 'pallet_off_ground', 'pallet_on_forks'] 
   # vehicles_annotated: ['amr', 'forklift', ...]  # ussage
 
-crowd_suppress_classes:
-  pallet_bulk: ['pallet', 'pallet_on_forks']
-  pallet_off_ground: ['pallet', 'pallet_on_forks']
+suppress_classes:
+  # in pallet_bulk area we suppress ['pallet', 'pallet_off_ground']
+  pallet_bulk: ['pallet', 'pallet_off_ground']
 
 evaluator:
   type: CocoEvaluator

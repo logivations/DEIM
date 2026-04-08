@@ -448,6 +448,7 @@ class DFINETransformer(nn.Module):
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
         self.reg_max = reg_max
+        self.suppress_source_ids = set()  # filled by solver
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -716,6 +717,7 @@ class DFINETransformer(nn.Module):
                     num_denoising=self.num_denoising,
                     label_noise_ratio=self.label_noise_ratio,
                     box_noise_scale=1.0,
+                    suppress_source_ids=self.suppress_source_ids
                     )
         else:
             denoising_logits, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None

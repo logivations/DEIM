@@ -15,8 +15,8 @@ import torchvision
 import copy
 
 from .dfine_utils import bbox2distance
-from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
-from .utils import filter_crowd_targets
+from .box_ops import box_cxcywh_to_xyxy, box_iou, box_iof, generalized_box_iou
+from .utils import filter_suppress_source_targets
 from ..misc.dist_utils import get_world_size, is_dist_available_and_initialized
 from ..core import register
 
@@ -67,7 +67,7 @@ class DEIMCriterion(nn.Module):
         self.use_uni_set = use_uni_set
 
         # Filled by solver from dataset-resolved configs (class names → IDs)
-        self.crowd_suppress_classes = {}  # {crowd_cat_id: [suppress_cat_ids]}
+        self.suppress_classes = {}  # {cat_id: [suppress_cat_ids]}
         self.ignore_tags_resolved = {}    # {tag_name: [cat_ids]}
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
@@ -268,7 +268,7 @@ class DEIMCriterion(nn.Module):
         self.fgl_targets, self.fgl_targets_dn = None, None
         self.own_targets, self.own_targets_dn = None, None
         self.num_pos, self.num_neg = None, None
-        self._crowd_targets = None
+        self._suppress_source_targets = None
         self._ignore_tag_mask = None 
 
     def _apply_custom_suppresion(self, loss, outputs, indices, idx, src_logits):
@@ -300,9 +300,9 @@ class DEIMCriterion(nn.Module):
                 same shape [bs, num_queries, num_classes].
         """
         # Suppress FP penalty for unmatched predictions overlapping crowd regions
-        if self._crowd_targets is not None and self.crowd_suppress_classes:
-            crowd_mask = self._get_crowd_suppression_mask(outputs, self._crowd_targets, indices)
-            loss = loss * (~crowd_mask).float()
+        if self._suppress_source_targets is not None and self.suppress_classes:
+            suppress_mask = self._get_suppress_mask(outputs, self._suppress_source_targets, indices)
+            loss = loss * (~suppress_mask).float()
 
         # Suppress FP for classes not annotated on this image (ignore tags)
         if (
@@ -338,11 +338,11 @@ class DEIMCriterion(nn.Module):
             
             pred_boxes = box_cxcywh_to_xyxy(outputs['pred_boxes'][i])
             crowd_boxes = box_cxcywh_to_xyxy(ct['boxes'])
-            iou_matrix, _ = box_iou(pred_boxes, crowd_boxes)
+            iof_matrix = box_iof(pred_boxes, crowd_boxes)
             
-            # Unmatched querries overlapping ANY crowd box (IoU > 0.5)
-            max_iou = iou_matrix.max(dim=1)[0]
-            overlapping = (~matched[i]) & (max_iou > 0.5)
+            # Unmatched querries overlapping ANY crowd box (IoF > 0.5)
+            max_iof = iof_matrix.max(dim=1)[0]
+            overlapping = (~matched[i]) & (max_iof > 0.5)
             
             if not overlapping.any():
                 continue
@@ -400,13 +400,14 @@ class DEIMCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         # Split crowd and non-crowd targets; only non-crowd participate in matching/loss
-        filtered_targets, crowd_targets = filter_crowd_targets(targets)
+        suppress_source_ids = set(self.suppress_classes.keys()) if self.suppress_classes else set()
+        filtered_targets, suppress_source_targets = filter_suppress_source_targets(targets, suppress_source_ids)
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, filtered_targets)['indices']
         self._clear_cache()
-        self._crowd_targets = crowd_targets  # restore after _clear_cache
+        self._suppress_source_targets = suppress_source_targets  # restore after _clear_cache
         self._ignore_tag_mask = self._get_ignore_tag_mask(targets)  # original targets, not filtered
 
         # Get the matching union set across all decoder layers.

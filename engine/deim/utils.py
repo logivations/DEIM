@@ -19,34 +19,40 @@ def inverse_sigmoid(x: torch.Tensor, eps: float=1e-5) -> torch.Tensor:
     return torch.log(x.clip(min=eps) / (1 - x).clip(min=eps))
 
 
-def filter_crowd_targets(targets):
-    """Split targets into non-crowd and crowd-only dicts.
+def filter_suppress_source_targets(targets, suppress_source_ids):
+    """Split targets into main and suppress-source targets.
+
+    Args:
+        targets: list of target dicts
+        suppress_source_ids: set of category IDs that are suppress sources (e.g. pallet_bulk)
 
     Returns:
-        filtered_targets: list of dicts with iscrowd==0 annotations only
-        crowd_targets: list of dicts with iscrowd==1 annotations only
+        main_targets: without suppress-source annotations
+        source_targets: only suppress-source annotations
     """
-    filtered, crowd_only = [], []
+    if not suppress_source_ids:
+        empty = [{k: v[:0] if isinstance(v, torch.Tensor) and v.dim() > 0 else v
+                  for k, v in t.items()} for t in targets]
+        return targets, empty
+
+    main, sources = [], []
     for t in targets:
-        if 'iscrowd' not in t:
-            filtered.append(t)
-            crowd_only.append({k: v[:0] if isinstance(v, torch.Tensor) and v.dim() > 0 else v
-                              for k, v in t.items()})
-            continue
-        mask = t['iscrowd'] == 0
-        crowd_mask = ~mask
-        ft, ct = {}, {}
+        mask = torch.tensor(
+            [lab.item() not in suppress_source_ids for lab in t['labels']],
+            dtype=torch.bool
+        )
+        source_mask = ~mask
+        mt, st = {}, {}
         for k, v in t.items():
             if isinstance(v, torch.Tensor) and v.dim() > 0 and v.shape[0] == mask.shape[0]:
-                ft[k] = v[mask]
-                ct[k] = v[crowd_mask]
+                mt[k] = v[mask]
+                st[k] = v[source_mask]
             else:
-                ft[k] = v
-                ct[k] = v
-        filtered.append(ft)
-        crowd_only.append(ct)
-    return filtered, crowd_only
-
+                mt[k] = v
+                st[k] = v
+        main.append(mt)
+        sources.append(st)
+    return main, sources
 
 def bias_init_with_prob(prior_prob=0.01):
     """initialize conv/fc bias value according to a given probability value."""

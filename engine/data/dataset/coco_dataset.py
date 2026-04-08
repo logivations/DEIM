@@ -28,9 +28,18 @@ __all__ = ['CocoDetection']
 @register()
 class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     __inject__ = ['transforms', ]
-    __share__ = ['remap_mscoco_category', 'ignore_tags', 'crowd_suppress_classes']
+    __share__ = ['remap_mscoco_category', 'ignore_tags', 'suppress_classes']
 
-    def __init__(self, img_folder, ann_file, transforms, return_masks=False, remap_mscoco_category=False, ignore_tags=None, crowd_suppress_classes=None):
+    def __init__(
+        self, 
+        img_folder, 
+        ann_file, 
+        transforms, 
+        return_masks=False, 
+        remap_mscoco_category=False, 
+        ignore_tags=None, 
+        suppress_classes=None
+    ):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.ignore_tags_cfg = ignore_tags or {}
@@ -60,18 +69,18 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
                 print(f"Warning: ignore_tags classes {unknown} not found in dataset categories")
             self.ignore_tags_resolved[tag_name] = [cat_name2id[n] for n in class_names if n in cat_name2id]
 
-        # Resolve crowd class names -> category IDs for crowd_suppress_classes
-        crowd_suppress_cfg = crowd_suppress_classes or {}
-        self.crowd_suppress_classes_resolved = {}
-        for crowd_name, suppress_names in crowd_suppress_cfg.items():
-            if crowd_name not in cat_name2id:
-                print(f"Warning: crowd_suppress_classes key '{crowd_name}' not found in dataset categories")
+        # Resolve suppress class names -> category IDs for suppress_classes
+        suppress_cfg = suppress_classes or {}
+        self.suppress_classes_resolved = {}
+        for source_name, suppress_names in suppress_cfg.items():
+            if source_name not in cat_name2id:
+                print(f"Warning: suppress_classes key '{source_name}' not found in dataset categories")
                 continue
             unknown = [n for n in suppress_names if n not in cat_name2id]
             if unknown:
-                print(f"Warning: crowd_suppress_classes values {unknown} not found in dataset categories")
-            crowd_id = cat_name2id[crowd_name]
-            self.crowd_suppress_classes_resolved[crowd_id] = [cat_name2id[n] for n in suppress_names if n in cat_name2id]
+                print(f"Warning: suppress_classes values {unknown} not found in dataset categories")
+            source_id = cat_name2id[source_name]
+            self.suppress_classes_resolved[source_id] = [cat_name2id[n] for n in suppress_names if n in cat_name2id]
 
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
@@ -156,7 +165,7 @@ class ConvertCocoPolysToMask(object):
         anno = target["annotations"]
 
         # Keep all annotations including iscrowd — crowd filtering handled in criterion
-        anno = [obj for obj in anno if obj.get('iscrowd', 0) in (0, 1)]
+        anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
 
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
