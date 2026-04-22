@@ -337,6 +337,7 @@ class RTDETRTransformerv2(nn.Module):
         self.num_layers = num_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
+        self.suppress_source_ids = set()  # filled by solver
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -578,7 +579,9 @@ class RTDETRTransformerv2(nn.Module):
                     self.denoising_class_embed, 
                     num_denoising=self.num_denoising, 
                     label_noise_ratio=self.label_noise_ratio, 
-                    box_noise_scale=self.box_noise_scale, )
+                    box_noise_scale=self.box_noise_scale, 
+                    suppress_source_ids=self.suppress_source_ids
+                )
         else:
             denoising_logits, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
 

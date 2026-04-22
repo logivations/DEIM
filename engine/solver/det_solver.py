@@ -81,6 +81,21 @@ class DetSolver(BaseSolver):
             }
             print(f"     ### GPU Interpolate enabled - scales: {collate_fn.scales} ###")
 
+        # Pass resolved configs from dataset to criterion (names → IDs)
+        dataset = self.train_dataloader.dataset
+        if hasattr(dataset, 'ignore_tags_resolved'):
+            self.criterion.ignore_tags_resolved = dataset.ignore_tags_resolved
+            print(f"     ### Ignore tags resolved: {self.criterion.ignore_tags_resolved} ###")
+        if hasattr(dataset, 'suppress_classes_resolved'):
+            resolved = dataset.suppress_classes_resolved
+            suppress_source_ids = set(resolved.keys())
+            # Criterion: full mapping {source_id: [suppress_ids]}
+            self.criterion.suppress_classes = resolved
+            # Decoder: set of source IDs for denoising filter
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+            model.decoder.suppress_source_ids = suppress_source_ids
+            print(f"     ### Suppress classes resolved: {resolved} ###")
+
         for epoch in range(start_epoch, args.epoches):
 
             self.train_dataloader.set_epoch(epoch)
