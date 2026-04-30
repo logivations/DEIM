@@ -48,7 +48,7 @@ onnx-file=$ONNX_FILE_NAME
 infer-dims=3;$RES
 
 [custom]
-# 1 - PVT, 2 - DEIM, 3 - TAO
+# 1 - PVT, 2 - DEIM
 detector-type=2
 min_confidence = 0.5
 labels=$CLASSES
