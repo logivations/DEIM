@@ -43,8 +43,6 @@ echo "[property]
 # preprocessing parameters.
 net-scale-factor=0.00392156862
 offsets=0;0;0
-# 0=Nearest, 1=Bilinear 2=VIC-5 Tap interpolation 3=VIC-10 Tap interpolation
-scaling-filter=3
 
 onnx-file=$ONNX_FILE_NAME
 infer-dims=3;$RES
