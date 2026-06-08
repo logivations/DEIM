@@ -282,7 +282,7 @@ class LQE(nn.Module):
         prob_topk, _ = prob.topk(self.k, dim=-1)
         stat = torch.cat([prob_topk, prob_topk.mean(dim=-1, keepdim=True)], dim=-1)
         quality_score = self.reg_conf(stat.reshape(B, L, -1))
-        return scores + quality_score
+        return scores + quality_score.nan_to_num(nan=0.0)
 
 
 class TransformerDecoder(nn.Module):
@@ -373,8 +373,10 @@ class TransformerDecoder(nn.Module):
                 pre_scores = score_head[0](output)
                 ref_points_initial = pre_bboxes.detach()
 
-            # Refine bounding box corners using FDR, integrating previous layer's corrections
-            pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
+            # Refine bounding box corners using FDR, integrating previous layer's corrections.
+            # Clamp to FP16 range — accumulated corrections can overflow to inf in FP16 inference,
+            # which then causes softmax(inf, ...) = NaN in LQE, corrupting detection scores.
+            pred_corners = (bbox_head[i](output + output_detach) + pred_corners_undetach).clamp(-65504, 65504)
             inter_ref_bbox = distance2bbox(ref_points_initial, integral(pred_corners, project), reg_scale)
 
             if self.training or i == self.eval_idx:
