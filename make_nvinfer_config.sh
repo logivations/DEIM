@@ -43,6 +43,8 @@ echo "[property]
 # preprocessing parameters.
 net-scale-factor=0.00392156862
 offsets=0;0;0
+# Integer 0: RGB 1: BGR 2: GRAY
+model-color-format = 0
 
 onnx-file=$ONNX_FILE_NAME
 infer-dims=3;$RES
