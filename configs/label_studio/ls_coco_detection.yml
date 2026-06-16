@@ -1,5 +1,15 @@
 task: detection
 
+# Top-level — shared with CocoDetection via __share__, resolved names→IDs, passed to criterion via solver
+ignore_tags:
+  # classes present here will be ignored in loss if pallets_annotated == False
+  pallets_annotated: ['pallet', 'pallet_bulk', 'pallet_off_ground', 'pallet_on_forks'] 
+  # vehicles_annotated: ['amr', 'forklift', ...]  # ussage
+
+suppress_classes:
+  # in pallet_bulk area we suppress ['pallet', 'pallet_off_ground']
+  pallet_bulk: ['pallet', 'pallet_off_ground']
+
 evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]

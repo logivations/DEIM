@@ -19,6 +19,41 @@ def inverse_sigmoid(x: torch.Tensor, eps: float=1e-5) -> torch.Tensor:
     return torch.log(x.clip(min=eps) / (1 - x).clip(min=eps))
 
 
+def filter_suppress_source_targets(targets, suppress_source_ids):
+    """Split targets into main and suppress-source targets.
+
+    Args:
+        targets: list of target dicts
+        suppress_source_ids: set of category IDs that are suppress sources (e.g. pallet_bulk)
+
+    Returns:
+        main_targets: without suppress-source annotations
+        source_targets: only suppress-source annotations
+    """
+    if not suppress_source_ids:
+        empty = [{k: v[:0] if isinstance(v, torch.Tensor) and v.dim() > 0 else v
+                  for k, v in t.items()} for t in targets]
+        return targets, empty
+
+    main, sources = [], []
+    for t in targets:
+        mask = torch.tensor(
+            [lab.item() not in suppress_source_ids for lab in t['labels']],
+            dtype=torch.bool
+        )
+        source_mask = ~mask
+        mt, st = {}, {}
+        for k, v in t.items():
+            if isinstance(v, torch.Tensor) and v.dim() > 0 and v.shape[0] == mask.shape[0]:
+                mt[k] = v[mask]
+                st[k] = v[source_mask]
+            else:
+                mt[k] = v
+                st[k] = v
+        main.append(mt)
+        sources.append(st)
+    return main, sources
+
 def bias_init_with_prob(prior_prob=0.01):
     """initialize conv/fc bias value according to a given probability value."""
     bias_init = float(-math.log((1 - prior_prob) / prior_prob))

@@ -43,14 +43,14 @@ echo "[property]
 # preprocessing parameters.
 net-scale-factor=0.00392156862
 offsets=0;0;0
-# 0=Nearest, 1=Bilinear 2=VIC-5 Tap interpolation 3=VIC-10 Tap interpolation
-scaling-filter=3
+# Integer 0: RGB 1: BGR 2: GRAY
+model-color-format = 0
 
 onnx-file=$ONNX_FILE_NAME
 infer-dims=3;$RES
 
 [custom]
-# 1 - PVT, 2 - DEIM, 3 - TAO
+# 1 - PVT, 2 - DEIM
 detector-type=2
 min_confidence = 0.5
 labels=$CLASSES

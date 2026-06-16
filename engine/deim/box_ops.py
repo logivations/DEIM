@@ -38,6 +38,20 @@ def box_iou(boxes1: Tensor, boxes2: Tensor):
     iou = inter / union
     return iou, union
 
+def box_iof(boxes1: Tensor, boxes2: Tensor):
+    """
+    Intersection over First — intersection divided by area of boxes1.
+    Returns 1.0 when boxes1 is fully inside boxes2, regardless of size difference.
+    """
+    area1 = box_area(boxes1)
+    
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
+
+    wh = (rb - lt).clamp(min=0)  # [N,M,2]
+    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
+    
+    return inter / area1[:, None].clamp(min=1e-6)
 
 def generalized_box_iou(boxes1, boxes2):
     """

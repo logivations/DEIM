@@ -4,7 +4,7 @@ Modifications Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 
 import torch
 
-from .utils import inverse_sigmoid
+from .utils import inverse_sigmoid, filter_suppress_source_targets
 from .box_ops import box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 
 
@@ -15,10 +15,15 @@ def get_contrastive_denoising_training_group(targets,
                                              class_embed,
                                              num_denoising=100,
                                              label_noise_ratio=0.5,
-                                             box_noise_scale=1.0,):
+                                             box_noise_scale=1.0,
+                                             suppress_source_ids=None):
     """cnd"""
     if num_denoising <= 0:
         return None, None, None, None
+
+    # Exclude suppress-source classes (e.g. pallet_bulk) from denoising queries
+    if suppress_source_ids:
+        targets, _ = filter_suppress_source_targets(targets, suppress_source_ids)
 
     num_gts = [len(t['labels']) for t in targets]
     device = targets[0]['labels'].device
