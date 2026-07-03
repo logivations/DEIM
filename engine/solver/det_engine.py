@@ -135,6 +135,7 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
     gpu_transforms = kwargs.get('gpu_transforms', None)
     multiscale_cfg = kwargs.get('multiscale_cfg', None)  # NEW: GPU multi-scale interpolate
     profile_sync = kwargs.get('profile_sync', False)
+    debug_nan = kwargs.get('debug_nan', False)
 
     def _t():
         # CUDA kernels are async: without a synchronize the timers measure kernel
@@ -184,7 +185,9 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             t_forward = _t() - t_forward_start
             profiling.forward += t_forward
 
-            if torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any():
+            # Debug-only: .any() forces a GPU sync every step. The math.isfinite(loss)
+            # check below still aborts on divergence when this is off.
+            if debug_nan and (torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any()):
                 print("NaN or Inf detected")
                 outputs['pred_boxes'] = torch.nan_to_num(outputs['pred_boxes'], nan=0.0)
                 state = model.state_dict()

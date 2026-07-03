@@ -7,6 +7,14 @@ checkpoint_freq: 12
 # Enable per run with: -u profile_sync=True
 profile_sync: False
 
+# TF32 matmul/conv on Ampere+ GPUs and cuDNN conv autotuning.
+allow_tf32: True
+cudnn_benchmark: True
+
+# Per-step NaN/Inf check on pred_boxes (forces a GPU sync each step, saves
+# NaN.pth on trigger). Re-enable for debugging with: -u debug_nan=True
+debug_nan: False
+
 
 sync_bn: True
 find_unused_parameters: False
