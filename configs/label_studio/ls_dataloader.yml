@@ -29,6 +29,8 @@ train_dataloader:
   total_batch_size: 32 # total batch size equals to 32 (4 * 8)
   num_workers: 16
   pin_memory: True
+  persistent_workers: True  # keep workers alive between epochs (no ~80s respawn stall)
+  prefetch_factor: 4
 
 
 val_dataloader:
@@ -41,3 +43,5 @@ val_dataloader:
   total_batch_size: 64
   num_workers: 16
   pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4

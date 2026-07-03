@@ -17,8 +17,15 @@ class DetDataset(data.Dataset):
         raise NotImplementedError("Please implement this function to return item before `transforms`.")
 
     def set_epoch(self, epoch) -> None:
-        self._epoch = epoch
+        # Shared-memory tensor: with persistent_workers the DataLoader workers
+        # keep their pickled copy of the dataset alive across epochs, so a plain
+        # attribute set in the main process would never reach them. A shared
+        # tensor is seen by the live workers immediately.
+        if not hasattr(self, '_shared_epoch'):
+            self._shared_epoch = torch.tensor([int(epoch)], dtype=torch.int64).share_memory_()
+        else:
+            self._shared_epoch[0] = int(epoch)
 
     @property
     def epoch(self):
-        return self._epoch if hasattr(self, '_epoch') else -1
+        return int(self._shared_epoch[0]) if hasattr(self, '_shared_epoch') else -1

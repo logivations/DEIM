@@ -73,11 +73,17 @@ def batch_image_collate_fn(items):
 
 class BaseCollateFunction(object):
     def set_epoch(self, epoch):
-        self._epoch = epoch
+        # Shared-memory tensor: the collate_fn runs inside DataLoader workers,
+        # which with persistent_workers never re-pickle it — a plain attribute
+        # would go stale there. See DetDataset.set_epoch.
+        if not hasattr(self, '_shared_epoch'):
+            self._shared_epoch = torch.tensor([int(epoch)], dtype=torch.int64).share_memory_()
+        else:
+            self._shared_epoch[0] = int(epoch)
 
     @property
     def epoch(self):
-        return self._epoch if hasattr(self, '_epoch') else -1
+        return int(self._shared_epoch[0]) if hasattr(self, '_shared_epoch') else -1
 
     def __call__(self, items):
         raise NotImplementedError('')

@@ -1,59 +1,72 @@
-# exp2-ema-foreach
+# exp3-persistent-workers
 
 ## Що змінено в цьому експерименті
 
-**EMA через foreach** (`engine/optim/ema.py::ModelEMA`):
+1. **`persistent_workers: True` + `prefetch_factor: 4`**
+   (`configs/label_studio/ls_dataloader.yml`, train і val лоадери):
+   раніше всі 16 воркерів вбивались і створювались наново на КОЖНІЙ епосі —
+   спостережувана затримка першого батча ~80s/епоху (форк процесів + повторне
+   завантаження COCO-індексу + прогрів prefetch-черги). Тепер воркери живуть
+   увесь ран.
 
-Стара реалізація на кожному кроці ітерувала повний `state_dict` у Python-циклі і
-робила два окремі CUDA-кернели на КОЖЕН тензор (`v *= d; v += (1-d)*m`) — сотні
-дрібних кернелів на крок, ~0.06s (~11% часу кроку в старих логах, стадія
-«Other (EMA/LR)»).
+2. **Патч `warp_loader`** (`engine/misc/dist_utils.py`): при DDP лоадер
+   пересоздається з DistributedSampler — раніше він ГУБИВ `persistent_workers`
+   і `prefetch_factor`. На одному GPU цей шлях не викликається, патч — страховка.
 
-Нова реалізація:
-- один раз кешує списки float-тензорів EMA та моделі (`_build_cache`; тензори
-  `state_dict` шарять storage з живими параметрами, оптимізатор і
-  `load_state_dict` оновлюють їх in-place, тому кеш валідний);
-- на кроці — два fused-виклики на ВСІ тензори одразу:
-  `torch._foreach_mul_(ema, d)` + `torch._foreach_add_(ema, model, alpha=1-d)`;
-- кеш інвалідується при зміні об'єкта моделі, `.to()` та `load_state_dict`.
+3. **Пропагація епохи в живі воркери** (`engine/data/dataset/_dataset.py`,
+   `engine/data/dataloader.py::BaseCollateFunction`) — критично для коректності:
+   політика вимкнення аугментацій (`stop_epoch_forward` читає `dataset.epoch`
+   ВСЕРЕДИНІ воркера) і mixup-логіка collate залежать від епохи. З персистентними
+   воркерами звичайний атрибут, виставлений у головному процесі, до них не
+   доходить — RandomZoomOut/RandomIoUCrop ніколи б не вимкнулись на stop_epoch.
+   Фікс: епоха зберігається в shared-memory тензорі
+   (`torch.tensor([...]).share_memory_()`) — живі воркери бачать оновлення одразу.
 
-Математика та сама (`v = d·v + (1−d)·m`); fused-акумуляція може відрізнятись
-в останніх бітах fp32 (заміряно: max abs diff ~1.5e-08 після 10 оновлень).
-`decay_fn`/warmup/`start` не чіпались.
-
-**A/B тест**: `tools/tests/test_ema_foreach.py` — порівнює нову реалізацію зі
-старим циклом (залишений у тесті як референс) на 10 оновленнях маленької моделі
-з conv/BN/linear (float-параметри, float- та int-бафери). Запуск у контейнері:
+**Тест**: `tools/tests/test_persistent_epoch.py` — піднімає DataLoader з
+persistent_workers=True/num_workers=2 і перевіряє, що після кожного `set_epoch`
+і датасет, і collate_fn всередині воркерів бачать нову епоху (пройдено в контейнері).
 
 ```bash
-docker run --rm -v /data/DEIM_worktrees/exp2-ema-foreach:/DEIM -w /DEIM \
-  quay.io/logivations/ml_all:LS_dfine_latest python3 tools/tests/test_ema_foreach.py
+docker run --rm -v /data/DEIM_worktrees/exp3-persistent-workers:/DEIM -w /DEIM \
+  --shm-size=2g quay.io/logivations/ml_all:LS_dfine_latest \
+  python3 tools/tests/test_persistent_epoch.py
 ```
 
 ## Очікуваний ефект
 
-Стадія «Other (EMA/LR)»: ~0.06s → <0.01s на крок (порядку −10% загального часу кроку).
+- Мінус ~80s стартової затримки на КОЖНІЙ епосі (крім нульової) — на 6-епоховому
+  рані це ~7 хв, на повних 72 епохах ~1.6 год.
+- Рівніша подача даних (prefetch_factor 4 замість 2).
 
-## Нюанси порівняння з exp1
+## Ціна / нюанси
 
-Практично жодних: результат EMA збігається зі старою реалізацією з точністю до
-останніх бітів fp32 (тест пройдено в контейнері, max abs diff 1.49e-08).
+- RAM: 32 живі воркери (16 train + 16 val) тримають COCO-індекс (fork → copy-on-write,
+  переважно шариться) + prefetch-буфери. Якщо тісно — знизити `prefetch_factor` до 2.
+- `persistent_workers=True` вимагає `num_workers > 0` (у конфізі 16 — ок).
+- RNG воркерів тепер продовжується між епохами замість respawn-reseed → потоки
+  аугментацій розходяться з exp0–2 починаючи з епохи 1+ (у межах шуму тренування;
+  порядок семплів незмінний — його задає sampler у головному процесі).
 
 ## Унаслідовано від попередніх експериментів
 
 - **exp0-baseline**: реверт RTDT-7618 (старий формат датасету); флаг `profile_sync`;
   override `stg1_epochs_perc`; `run_experiments.sh`; `tools/benchmark_decode.py`; `speedup.md`.
-- **exp1-tf32-nan-gate**: TF32 + cudnn.benchmark (`allow_tf32`/`cudnn_benchmark`,
-  дефолт on); NaN-перевірка за флагом `debug_nan` (дефолт off).
+- **exp1-tf32-nan-gate**: TF32 + cudnn.benchmark (дефолт on); NaN-перевірка за
+  флагом `debug_nan` (дефолт off).
+- **exp2-ema-foreach**: EMA через `torch._foreach_*` з кешем тензорів
+  (+ `tools/tests/test_ema_foreach.py`).
 
 ## Як запускати
 
 ```bash
-./run_experiments.sh exp2-ema-foreach
+./run_experiments.sh exp3-persistent-workers
 ```
 
-## На що дивитися в TensorBoard (vs exp1-tf32-nan-gate)
+## На що дивитися в TensorBoard (vs exp2-ema-foreach)
 
-- `Profiling/time_other` — має впасти з ~0.06s до <0.01s.
-- `Profiling/time_total` на епохах 1–4.
-- `Loss/*`, `Test/*` — мають збігатися з exp1 у межах шуму (EMA-математика ідентична).
+- `Profiling/time_data_load` на епохах 1–5 — перший батч епохи більше не коштує
+  ~80s, середнє data_load має помітно впасти саме на непершій епосі.
+- Загальний wall time епох 1–5 у train.log.
+- У train.log близько stop_epoch (епоха 5 при EPOCHS=6): рядок
+  «Multi-scale Training until ...» і поведінка аугментацій — політика має
+  перемкнутись (це і перевіряє shared-epoch фікс).
