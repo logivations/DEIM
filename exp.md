@@ -1,51 +1,64 @@
-# exp3-persistent-workers
+# exp4-criterion-desync
 
 ## Що змінено в цьому експерименті
 
-1. **`persistent_workers: True` + `prefetch_factor: 4`**
-   (`configs/label_studio/ls_dataloader.yml`, train і val лоадери):
-   раніше всі 16 воркерів вбивались і створювались наново на КОЖНІЙ епосі —
-   спостережувана затримка першого батча ~80s/епоху (форк процесів + повторне
-   завантаження COCO-індексу + прогрів prefetch-черги). Тепер воркери живуть
-   увесь ран.
+Прибрані приховані GPU→CPU синхронізації в лос-шляху. Criterion викликає
+класифікаційний лос ~8 разів на крок (main + 2 aux + pre + enc + 3 dn), і кожен
+виклик містив Python-цикли з `.item()`/`.any()` — сумарно сотні примусових
+синхронізацій на крок, які серіалізували чергу CUDA (це головна причина, чому
+стадія «Criterion» їла ~29% часу).
 
-2. **Патч `warp_loader`** (`engine/misc/dist_utils.py`): при DDP лоадер
-   пересоздається з DistributedSampler — раніше він ГУБИВ `persistent_workers`
-   і `prefetch_factor`. На одному GPU цей шлях не викликається, патч — страховка.
+1. **`filter_suppress_source_targets`** (`engine/deim/utils.py`): маска
+   suppress-source лейблів через `torch.isin` на GPU замість `.item()`-циклу
+   по кожному лейблу кожного зображення. Семантика ідентична.
 
-3. **Пропагація епохи в живі воркери** (`engine/data/dataset/_dataset.py`,
-   `engine/data/dataloader.py::BaseCollateFunction`) — критично для коректності:
-   політика вимкнення аугментацій (`stop_epoch_forward` читає `dataset.epoch`
-   ВСЕРЕДИНІ воркера) і mixup-логіка collate залежать від епохи. З персистентними
-   воркерами звичайний атрибут, виставлений у головному процесі, до них не
-   доходить — RandomZoomOut/RandomIoUCrop ніколи б не вимкнулись на stop_epoch.
-   Фікс: епоха зберігається в shared-memory тензорі
-   (`torch.tensor([...]).share_memory_()`) — живі воркери бачать оновлення одразу.
+2. **`_get_ignore_tag_mask`** (`engine/deim/deim_criterion.py`): векторизований
+   збір значень тегів замість `.item()` на кожне зображення; маска повертається
+   безумовно (старий early-out `mask.any()` — це теж синк; порожня маска
+   математично no-op нижче по коду).
 
-**Тест**: `tools/tests/test_persistent_epoch.py` — піднімає DataLoader з
-persistent_workers=True/num_workers=2 і перевіряє, що після кожного `set_epoch`
-і датасет, і collate_fn всередині воркерів бачать нову епоху (пройдено в контейнері).
+3. **`_get_suppress_mask` + `_prepare_suppress_cache`**: таргет-залежні частини
+   (xyxy source-бокси і рядки пригнічуваних класів через статичну LUT
+   `[src_id, dst_class]`) рахуються тепер ОДИН раз на крок замість перерахунку
+   в кожному з ~8 викликів; у per-layer частині прибрані `.item()`-цикл по
+   лейблах і early-out `overlapping.any()`. Guard за shape зберігає стару
+   поведінку для class-agnostic enc-гілки.
+
+4. **`_get_go_indices`**: вибір найчастішої (row, col) пари векторизовано через
+   `torch.unique` + стабільний argsort + `scatter_reduce(amin)` замість
+   `.item()`-циклу по КОЖНІЙ унікальній парі. Нюанс: при точних нічиїх
+   лічильників вибір колонки тепер детермінований (лексикографічний); старий
+   код покладався на нестабільний argsort, тобто його вибір на нічиїх був
+   довільний. У межах шуму тренування.
+
+Батчинг matcher-а (один `.cpu()` на всі 5 cost-матриць) свідомо ВІДКЛАДЕНО —
+робити лише якщо профайлінг цього рану досі покаже домінування matcher-стоянок.
+
+**A/B тест**: `tools/tests/test_criterion_vectorized.py` — старі реалізації
+збережені в тесті вербатим як референс:
+- по-функційно: точна рівність на 20 випадкових конфігураціях кожна;
+- `_get_go_indices`: рівність множин рядків + перевірка max-count кожного вибору
+  + точна рівність на рядках без нічиїх;
+- інтеграційно: повний `criterion.forward` (vfl+boxes, групи main/aux/pre/enc)
+  старий vs новий шлях — збіг до atol 1e-6 (5 трейлів).
 
 ```bash
-docker run --rm -v /data/DEIM_worktrees/exp3-persistent-workers:/DEIM -w /DEIM \
-  --shm-size=2g quay.io/logivations/ml_all:LS_dfine_latest \
-  python3 tools/tests/test_persistent_epoch.py
+docker run --rm -e PYTHONDONTWRITEBYTECODE=1 \
+  -v /data/DEIM_worktrees/exp4-criterion-desync:/DEIM -w /DEIM \
+  quay.io/logivations/ml_all:LS_dfine_latest \
+  python3 tools/tests/test_criterion_vectorized.py
 ```
 
 ## Очікуваний ефект
 
-- Мінус ~80s стартової затримки на КОЖНІЙ епосі (крім нульової) — на 6-епоховому
-  рані це ~7 хв, на повних 72 епохах ~1.6 год.
-- Рівніша подача даних (prefetch_factor 4 замість 2).
+Вікно «Criterion»: ~0.15s → ~0.05–0.08s на крок, плюс через десеріалізацію
+CUDA-черги покращується перекриття criterion/backward.
 
-## Ціна / нюанси
+## Нюанси порівняння з exp3
 
-- RAM: 32 живі воркери (16 train + 16 val) тримають COCO-індекс (fork → copy-on-write,
-  переважно шариться) + prefetch-буфери. Якщо тісно — знизити `prefetch_factor` до 2.
-- `persistent_workers=True` вимагає `num_workers > 0` (у конфізі 16 — ок).
-- RNG воркерів тепер продовжується між епохами замість respawn-reseed → потоки
-  аугментацій розходяться з exp0–2 починаючи з епохи 1+ (у межах шуму тренування;
-  порядок семплів незмінний — його задає sampler у головному процесі).
+- На точних нічиїх у go-indices вибір пари може відрізнятись від старого коду
+  (який сам був недетермінований) → криві boxes/local лосів можуть мікроскопічно
+  розійтись; vfl не зачеплений.
 
 ## Унаслідовано від попередніх експериментів
 
@@ -53,20 +66,19 @@ docker run --rm -v /data/DEIM_worktrees/exp3-persistent-workers:/DEIM -w /DEIM \
   override `stg1_epochs_perc`; `run_experiments.sh`; `tools/benchmark_decode.py`; `speedup.md`.
 - **exp1-tf32-nan-gate**: TF32 + cudnn.benchmark (дефолт on); NaN-перевірка за
   флагом `debug_nan` (дефолт off).
-- **exp2-ema-foreach**: EMA через `torch._foreach_*` з кешем тензорів
-  (+ `tools/tests/test_ema_foreach.py`).
+- **exp2-ema-foreach**: EMA через `torch._foreach_*` (+ `tools/tests/test_ema_foreach.py`).
+- **exp3-persistent-workers**: persistent_workers + prefetch_factor 4 + shared-memory
+  епоха у воркери (+ `tools/tests/test_persistent_epoch.py`).
 
 ## Як запускати
 
 ```bash
-./run_experiments.sh exp3-persistent-workers
+./run_experiments.sh exp4-criterion-desync
 ```
 
-## На що дивитися в TensorBoard (vs exp2-ema-foreach)
+## На що дивитися в TensorBoard (vs exp3-persistent-workers)
 
-- `Profiling/time_data_load` на епохах 1–5 — перший батч епохи більше не коштує
-  ~80s, середнє data_load має помітно впасти саме на непершій епосі.
-- Загальний wall time епох 1–5 у train.log.
-- У train.log близько stop_epoch (епоха 5 при EPOCHS=6): рядок
-  «Multi-scale Training until ...» і поведінка аугментацій — політика має
-  перемкнутись (це і перевіряє shared-epoch фікс).
+- `Profiling/time_criterion` — головна метрика цього експерименту, має впасти
+  щонайменше вдвічі.
+- `Profiling/time_backward` — може теж впасти (краще перекриття черги).
+- `Loss/*` — мають іти впритул до exp3 (мікророзбіжності на нічиїх — норма).

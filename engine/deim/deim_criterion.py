@@ -70,6 +70,11 @@ class DEIMCriterion(nn.Module):
         self.suppress_classes = {}  # {cat_id: [suppress_cat_ids]}
         self.ignore_tags_resolved = {}    # {tag_name: [cat_ids]}
 
+        # Per-step caches for the suppress mask (see _prepare_suppress_cache)
+        self._suppress_lut = None          # [max_src_id+1, num_classes] bool
+        self._suppress_src_boxes = None    # per-image xyxy source boxes
+        self._suppress_cls_mask = None     # [bs, num_classes] bool
+
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
@@ -251,17 +256,24 @@ class DEIMCriterion(nn.Module):
                         for idx1, idx2 in zip(indices.copy(), indices_aux.copy())]
 
         for ind in [torch.cat([idx[0][:, None], idx[1][:, None]], 1) for idx in indices]:
+            # For each row (query) pick the most frequent (row, col) pair, without
+            # the former per-pair .item() loop that synced GPU->CPU every step.
+            # Ties are broken lexicographically (stable sort over the already
+            # lexicographically sorted output of torch.unique); the old dict loop
+            # relied on an unstable argsort, so its tie-breaks were arbitrary.
             unique, counts = torch.unique(ind, return_counts=True, dim=0)
-            count_sort_indices = torch.argsort(counts, descending=True)
+            count_sort_indices = torch.argsort(counts, descending=True, stable=True)
             unique_sorted = unique[count_sort_indices]
-            column_to_row = {}
-            for idx in unique_sorted:
-                row_idx, col_idx = idx[0].item(), idx[1].item()
-                if row_idx not in column_to_row:
-                    column_to_row[row_idx] = col_idx
-            final_rows = torch.tensor(list(column_to_row.keys()), device=ind.device)
-            final_cols = torch.tensor(list(column_to_row.values()), device=ind.device)
-            results.append((final_rows.long(), final_cols.long()))
+            rows = unique_sorted[:, 0]
+            uniq_rows, inverse = torch.unique(rows, return_inverse=True)
+            first_pos = torch.full((uniq_rows.numel(),), rows.numel(),
+                                   dtype=torch.long, device=ind.device)
+            first_pos.scatter_reduce_(0, inverse,
+                                      torch.arange(rows.numel(), device=ind.device),
+                                      reduce='amin', include_self=True)
+            # ascending first_pos reproduces the old dict-insertion order
+            picked = unique_sorted[first_pos.sort().values]
+            results.append((picked[:, 0].long(), picked[:, 1].long()))
         return results
 
     def _clear_cache(self):
@@ -269,7 +281,9 @@ class DEIMCriterion(nn.Module):
         self.own_targets, self.own_targets_dn = None, None
         self.num_pos, self.num_neg = None, None
         self._suppress_source_targets = None
-        self._ignore_tag_mask = None 
+        self._ignore_tag_mask = None
+        self._suppress_src_boxes = None
+        self._suppress_cls_mask = None
 
     def _apply_custom_suppresion(self, loss, outputs, indices, idx, src_logits):
         """Apply suppress-classes and ignore-tag FP suppression to classification loss.
@@ -318,45 +332,72 @@ class DEIMCriterion(nn.Module):
 
         return loss
 
+    def _prepare_suppress_cache(self, suppress_source_targets):
+        """Precompute the target-derived parts of the suppress mask once per step.
+
+        _get_suppress_mask runs inside every classification-loss call (~8 layer
+        groups per step) but only its prediction-dependent part actually changes
+        per layer. The per-image source boxes and the suppressed-class rows are
+        step constants, and the old per-box `.item()` label loop was a GPU->CPU
+        sync repeated for every layer group.
+        """
+        self._suppress_src_boxes = None
+        self._suppress_cls_mask = None
+        if not self.suppress_classes or not suppress_source_targets:
+            return
+
+        device = suppress_source_targets[0]['labels'].device
+        if self._suppress_lut is None or self._suppress_lut.device != device \
+                or self._suppress_lut.shape[1] != self.num_classes:
+            lut = torch.zeros(max(self.suppress_classes.keys()) + 1, self.num_classes,
+                              dtype=torch.bool, device=device)
+            for src_id, dst_ids in self.suppress_classes.items():
+                valid = [d for d in dst_ids if d < self.num_classes]
+                if valid:
+                    lut[src_id, valid] = True
+            self._suppress_lut = lut
+
+        boxes, cls_rows = [], []
+        empty_row = torch.zeros(self.num_classes, dtype=torch.bool, device=device)
+        for st in suppress_source_targets:
+            if st['boxes'].shape[0] == 0:
+                boxes.append(st['boxes'])
+                cls_rows.append(empty_row)
+            else:
+                boxes.append(box_cxcywh_to_xyxy(st['boxes']))
+                cls_rows.append(self._suppress_lut[st['labels']].any(dim=0))
+        self._suppress_src_boxes = boxes
+        self._suppress_cls_mask = torch.stack(cls_rows)  # [bs, num_classes]
+
     def _get_suppress_mask(self, outputs, suppress_source_targets, indices):
         """Mask [bs, num_queries, num_classes] — suppress FP cls loss for unmatched
         predictions overlapping suppress-source areas (e.g. pallet_bulk zones).
         """
         bs, num_queries, num_classes = outputs['pred_logits'].shape
         device = outputs['pred_logits'].device
-        suppress = torch.zeros(bs, num_queries, num_classes, dtype=torch.bool, device=device)
 
-        # Build set of matched predictions
+        cls_mask = self._suppress_cls_mask
+        if cls_mask is None or cls_mask.shape[-1] != num_classes:
+            # Class count of this head differs from the full one (class-agnostic
+            # encoder branch) — no suppression, matching the old behavior.
+            return torch.zeros(bs, num_queries, num_classes, dtype=torch.bool, device=device)
+
+        # Build set of matched predictions (single scatter, no per-image loop)
         matched = torch.zeros(bs, num_queries, dtype=torch.bool, device=device)
-        for i, (src_idx, _) in enumerate(indices):
-            matched[i, src_idx] = True
+        matched[self._get_src_permutation_idx(indices)] = True
 
-        for i, st in enumerate(suppress_source_targets):
-            if len(st['boxes']) == 0:
+        # Unmatched queries overlapping ANY suppress-source box (IoF > 0.5).
+        # The per-image loop stays (ragged source-box counts) but contains no
+        # `.item()`/`.any()` early-outs, so nothing forces a GPU sync.
+        overlapping = torch.zeros(bs, num_queries, dtype=torch.bool, device=device)
+        for i, source_boxes in enumerate(self._suppress_src_boxes):
+            if source_boxes.shape[0] == 0:
                 continue
-
             pred_boxes = box_cxcywh_to_xyxy(outputs['pred_boxes'][i])
-            source_boxes = box_cxcywh_to_xyxy(st['boxes'])
             iof_matrix = box_iof(pred_boxes, source_boxes)
+            overlapping[i] = (~matched[i]) & (iof_matrix.max(dim=1)[0] > 0.5)
 
-            # Unmatched queries overlapping ANY suppress-source box (IoF > 0.5)
-            max_iof = iof_matrix.max(dim=1)[0]
-            overlapping = (~matched[i]) & (max_iof > 0.5)
-
-            if not overlapping.any():
-                continue
-
-            # Collect suppressed class IDs from all suppress-source boxes on this image
-            suppress_cls = set()
-            for j in range(len(st['boxes'])):
-                label = st['labels'][j].item()
-                if label in self.suppress_classes:
-                    suppress_cls.update(self.suppress_classes[label])
-
-            for cls_id in suppress_cls:
-                suppress[i, overlapping, cls_id] = True
-
-        return suppress
+        return overlapping.unsqueeze(-1) & cls_mask.unsqueeze(1)
 
     def _get_ignore_tag_mask(self, targets):
         """Build [bs, num_classes] mask — True = suppress FP loss for this class/image.
@@ -372,13 +413,20 @@ class DEIMCriterion(nn.Module):
             if not valid_ids:
                 print(f"Warning! No valid ids for ignore tag in {self.ignore_tags_resolved=}")
                 continue
-            
-            cls_tensor = torch.tensor(valid_ids, device=device)
-            for i, t in enumerate(targets):
-                if tag_name in t and t[tag_name].item() == 0: # tag=false -> suppress
-                    mask[i, cls_tensor] = True
 
-        return mask if mask.any() else None
+            cls_tensor = torch.tensor(valid_ids, device=device)
+            # tag=false -> suppress; missing tag -> keep. Vectorized instead of a
+            # per-image .item() loop (one GPU sync per image per step).
+            present = torch.tensor([tag_name in t for t in targets], device=device)
+            one = torch.ones((), dtype=torch.long, device=device)
+            vals = torch.stack([t[tag_name].reshape(()).long() if tag_name in t else one
+                                for t in targets])
+            rows = present & (vals == 0)
+            mask[:, cls_tensor] |= rows.unsqueeze(1)
+
+        # Returned unconditionally: an all-False mask is a no-op downstream, and
+        # the old `mask.any()` early-out was itself a per-step GPU sync.
+        return mask
 
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
@@ -408,6 +456,7 @@ class DEIMCriterion(nn.Module):
         self._clear_cache()
         self._suppress_source_targets = suppress_source_targets  # restore after _clear_cache
         self._ignore_tag_mask = self._get_ignore_tag_mask(targets)  # original targets, not filtered
+        self._prepare_suppress_cache(suppress_source_targets)  # step-constant parts of suppress mask
 
         # Get the matching union set across all decoder layers.
         if 'aux_outputs' in outputs:
