@@ -8,6 +8,8 @@ from typing import Tuple
 
 def apply_ls_params(args: argparse.Namespace, cfg: YAMLConfig, stg1_epochs_perc: float = 1 / 6):
     # Set epochs
+    # stage-2 (no-aug) share of the run; override per run with -u stg1_epochs_perc=0.5
+    stg1_epochs_perc = float(cfg.yaml_cfg.get('stg1_epochs_perc', stg1_epochs_perc))
     cfg.epoches = args.train_epochs
     cfg.yaml_cfg['train_dataloader']['dataset']['transforms']['policy']['epoch'] = int((1 - stg1_epochs_perc) * cfg.epoches)
     cfg.yaml_cfg['train_dataloader']['collate_fn']['stop_epoch'] = int((1 - stg1_epochs_perc) * cfg.epoches)

@@ -2,6 +2,11 @@ print_freq: 100
 output_dir: './logs'
 checkpoint_freq: 12
 
+# Accurate per-stage profiling: inserts torch.cuda.synchronize() before every
+# stage timer in train_one_epoch. Small overhead, truthful attribution.
+# Enable per run with: -u profile_sync=True
+profile_sync: False
+
 
 sync_bn: True
 find_unused_parameters: False
