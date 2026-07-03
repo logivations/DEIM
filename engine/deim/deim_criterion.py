@@ -370,6 +370,7 @@ class DEIMCriterion(nn.Module):
         for tag_name, class_ids in self.ignore_tags_resolved.items():
             valid_ids = [c for c in class_ids if c < self.num_classes]
             if not valid_ids:
+                print(f"Warning! No valid ids for ignore tag in {self.ignore_tags_resolved=}")
                 continue
             
             cls_tensor = torch.tensor(valid_ids, device=device)
