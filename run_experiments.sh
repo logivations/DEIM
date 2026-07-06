@@ -50,6 +50,7 @@ DEFAULT_STACK=(
   exp2-ema-foreach
   exp3-persistent-workers
   exp4-criterion-desync
+  exp5-decode-backend
 )
 
 if [ "$#" -gt 0 ]; then

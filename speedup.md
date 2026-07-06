@@ -87,6 +87,7 @@ if torch.cuda.is_available():
 - Вивід: таблиця imgs/sec + прискорення відносно PIL, друк + збереження в json.
 - Правило рішення: якщо переможець швидший за PIL >1.5× на чистому декодуванні → впроваджуємо його в умовній гілці `exp5-decode-backend` (зміна обмежена завантаженням зображення в `CocoDetection`, engine/data/dataset/coco_dataset.py; трансформи torchvision v2 приймають і тензори, і PIL — сумісність пайплайна вирішується в цій гілці).
 - Нотатка про чесність (у виводі скрипта + exp.md): різні реалізації libjpeg дають піксельні відмінності округлення (chroma upsampling) — семантично це шум, але бітової ідентичності з baseline не буде; тому це окремий експеримент у хвості стеку, а не зміна в усіх експериментах.
+- **РЕЗУЛЬТАТ (сервер keypoint-tuning, 2026-07-06)**: torchvision.io = 1.60× проти PIL на чистому декоді (end-to-end з трансформами ≈ 1.37×; OpenCV/PyTurboJPEG в образі відсутні) → поріг пройдено, гілку `exp5-decode-backend` СТВОРЕНО і додано в дефолтний стек оркестратора.
 
 ## Гарантії відтворюваності та порівнюваності (документуються в кожному exp.md)
 
@@ -150,7 +151,9 @@ docker run --name deim_train_{exp_name} --rm --gpus all --shm-size=16g \
 2. **`exp2-ema-foreach`** (від exp1): пункт C (переписаний ModelEMA на foreach) + allclose sanity-скрипт. exp.md: ця зміна + унаслідоване з exp0–1.
 3. **`exp3-persistent-workers`** (від exp2): пункт A (yaml persistent_workers/prefetch_factor + патч warp_loader + shared-memory пропагація епохи). exp.md: ця зміна + унаслідоване з exp0–2; нотатка про ціну в RAM і поведінку пропагації епохи (перемикання політики аугментацій на stop_epoch).
 4. **`exp4-criterion-desync`** (від exp3): пункт D 1–4 (векторизація criterion) + fixed-seed скрипт дампу лосів для A/B. exp.md: ця зміна + унаслідоване з exp0–3.
-5. **`exp5-decode-backend`** (від exp4, УМОВНА): створюється лише якщо бенчмарк Кроку 0.5 покаже виграш >1.5× на декодуванні — перемикає завантаження зображень у `CocoDetection` на бекенд-переможець. exp.md: ця зміна + унаслідоване з exp0–4 + таблиця результатів бенчмарку.
+5. **`exp5-decode-backend`** (від exp4): СТВОРЕНА за результатом бенчмарку (torchvision.io 1.60× проти PIL) — `decode_backend: torchvision` у `CocoDetection` (декод одразу в uint8 CHW tv_tensors.Image), `ConvertPILImage` приймає тензорний вхід. A/B: `tools/tests/test_decode_backend.py`.
+
+⚠ Нюанс заліза: на сервері keypoint-tuning стоять Quadro RTX 5000 (Turing, sm_75) — **TF32 працює лише на Ampere+**, тому `allow_tf32` з exp1 там тихий no-op; виграш exp1 на цьому сервері дає лише cudnn.benchmark + debug_nan-gate.
 
 Примітка для ранів 12+12 епох: `tools/utils.py apply_ls_params` ставить stop_epoch = int(5/6·epoches) — з epoches=24 межа вимкнення аугментацій/рестарту EMA припадає на епоху 20, тож розбивка 12+12 покриває обидві стадії лише за відповідного конфігурування; це буде зазначено в exp.md, щоб рани були порівнюваними.
 
