@@ -124,8 +124,12 @@ class ConvertBoxes(T.Transform):
 
 @register()
 class ConvertPILImage(T.Transform):
+    # tv_tensors.Image is accepted too (torchvision decode backend). Plain
+    # torch.Tensor must NOT be listed here: BoundingBoxes/Mask are Tensor
+    # subclasses and would get scaled as if they were images.
     _transformed_types = (
         PIL.Image.Image,
+        Image,
     )
     def __init__(self, dtype='float32', scale=True) -> None:
         super().__init__()
@@ -133,7 +137,8 @@ class ConvertPILImage(T.Transform):
         self.scale = scale
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        inpt = F.pil_to_tensor(inpt)
+        if isinstance(inpt, PIL.Image.Image):
+            inpt = F.pil_to_tensor(inpt)
         if self.dtype == 'float32':
             inpt = inpt.float()
 

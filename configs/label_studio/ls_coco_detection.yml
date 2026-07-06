@@ -24,6 +24,7 @@ train_dataloader:
     img_folder: /dataset/train/
     ann_file: /dataset/coco_annotations.json
     return_masks: False
+    decode_backend: torchvision  # libjpeg-turbo via torchvision.io, ~1.6x faster than PIL
     transforms:
       type: Compose
       ops: ~
@@ -40,6 +41,7 @@ val_dataloader:
     img_folder: /dataset/test/
     ann_file: /dataset/coco_annotations.json
     return_masks: False
+    decode_backend: torchvision
     transforms:
       type: Compose
       ops: ~ 
