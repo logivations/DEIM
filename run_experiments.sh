@@ -24,6 +24,12 @@
 #   WORKTREES_DIR   where per-branch worktrees are created (default /data/DEIM_worktrees)
 #   STG1_PERC       optional stage-2 share override, e.g. 0.5 for a 12+12 split
 #                   with EPOCHS=24 (passed as -u stg1_epochs_perc=...)
+#   BS              override total train batch size, e.g. BS=16 (use when the
+#                   GPU OOMs: bs=32@512 with the 640 multiscale is tight on 16GB
+#                   cards). Apply the SAME value to the whole stack.
+#   WORKERS         override dataloader workers for train+val, e.g. WORKERS=8
+#                   (set to the CPU core count; 16 workers on an 8-core host
+#                   oversubscribes and slows data loading)
 #   EXTRA_UPDATES   extra -u overrides appended to the train command
 #   CONTINUE_ON_FAIL=1  keep running remaining experiments after a failure
 #
@@ -41,6 +47,8 @@ DATASET_DIR="${DATASET_DIR:-/data/GM_dataset}"
 RESULTS_DIR="${RESULTS_DIR:-/data/GM_results}"
 WORKTREES_DIR="${WORKTREES_DIR:-/data/DEIM_worktrees}"
 STG1_PERC="${STG1_PERC:-}"
+BS="${BS:-}"
+WORKERS="${WORKERS:-}"
 EXTRA_UPDATES="${EXTRA_UPDATES:-}"
 CONTINUE_ON_FAIL="${CONTINUE_ON_FAIL:-0}"
 
@@ -68,6 +76,12 @@ fi
 UPDATES="profile_sync=True"
 if [ -n "$STG1_PERC" ]; then
   UPDATES="$UPDATES stg1_epochs_perc=$STG1_PERC"
+fi
+if [ -n "$BS" ]; then
+  UPDATES="$UPDATES train_dataloader.total_batch_size=$BS"
+fi
+if [ -n "$WORKERS" ]; then
+  UPDATES="$UPDATES train_dataloader.num_workers=$WORKERS val_dataloader.num_workers=$WORKERS"
 fi
 if [ -n "$EXTRA_UPDATES" ]; then
   UPDATES="$UPDATES $EXTRA_UPDATES"
@@ -114,6 +128,7 @@ for BRANCH in "${BRANCHES[@]}"; do
   mkdir -p "$EXP_RESULTS"
 
   docker run --name "deim_train_$EXP_NAME" --rm --gpus all --shm-size=16g \
+    -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     --network host -w /DEIM \
     -v "$WT":/DEIM \
     -v "$DATASET_DIR":/dataset:ro \
