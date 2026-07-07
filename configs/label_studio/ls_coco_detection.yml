@@ -24,6 +24,10 @@ train_dataloader:
     img_folder: /dataset/train/
     ann_file: /dataset/coco_annotations.json
     return_masks: False
+    # decode JPEGs directly at reduced size (1/2, 1/4 or 1/8 - whichever keeps
+    # both sides >= presize_res); bboxes are rescaled to match. For 5MP sources
+    # and 512 training res, 768 keeps a ~1.5x quality margin for augmentations.
+    presize_res: 768
     transforms:
       type: Compose
       ops: ~
@@ -40,6 +44,7 @@ val_dataloader:
     img_folder: /dataset/test/
     ann_file: /dataset/coco_annotations.json
     return_masks: False
+    presize_res: 768
     transforms:
       type: Compose
       ops: ~ 
