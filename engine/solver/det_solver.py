@@ -119,6 +119,8 @@ class DetSolver(BaseSolver):
                 epoch,
                 max_norm=args.clip_max_norm,
                 print_freq=args.print_freq,
+                profile_sync=args.profile_sync,
+                debug_nan=args.debug_nan,
                 ema=self.ema,
                 scaler=self.scaler,
                 lr_warmup_scheduler=self.lr_warmup_scheduler,

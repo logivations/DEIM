@@ -36,12 +36,13 @@ def filter_suppress_source_targets(targets, suppress_source_ids):
         return targets, empty
 
     main, sources = [], []
+    ids = None
     for t in targets:
-        mask = torch.tensor(
-            [lab.item() not in suppress_source_ids for lab in t['labels']],
-            dtype=torch.bool
-        )
-        source_mask = ~mask
+        if ids is None or ids.device != t['labels'].device:
+            ids = torch.as_tensor(sorted(suppress_source_ids),
+                                  dtype=t['labels'].dtype, device=t['labels'].device)
+        source_mask = torch.isin(t['labels'], ids)
+        mask = ~source_mask
         mt, st = {}, {}
         for k, v in t.items():
             if isinstance(v, torch.Tensor) and v.dim() > 0 and v.shape[0] == mask.shape[0]:
