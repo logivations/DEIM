@@ -42,10 +42,12 @@ class ModelEMA(object):
         self.before_start = 0
         self.start = start
         self.updates = 0  # number of EMA updates
+        # Read self.decay (not the captured constructor arg) so runtime changes
+        # like `ema.decay = ema_restart_decay` at stop_epoch actually take effect.
         if warmups == 0:
-            self.decay_fn = lambda x: decay
+            self.decay_fn = lambda x: self.decay
         else:
-            self.decay_fn = lambda x: decay * (1 - math.exp(-x / warmups))  # decay exponential ramp (to help early epochs)
+            self.decay_fn = lambda x: self.decay * (1 - math.exp(-x / warmups))  # decay exponential ramp (to help early epochs)
 
         for p in self.module.parameters():
             p.requires_grad_(False)
