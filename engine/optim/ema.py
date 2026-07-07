@@ -50,23 +50,38 @@ class ModelEMA(object):
         for p in self.module.parameters():
             p.requires_grad_(False)
 
+        self._cache_model_id = None
+
+    def _build_cache(self, model: nn.Module):
+        # state_dict tensors share storage with the live parameters/buffers, and
+        # both the optimizer and load_state_dict update them in-place, so the
+        # cached references stay valid. The cache is invalidated whenever the
+        # model object changes, the EMA is moved, or a state dict is loaded.
+        msd = dist_utils.de_parallel(model).state_dict()
+        esd = self.module.state_dict()
+        keys = [k for k, v in esd.items() if v.dtype.is_floating_point]
+        assert all(k in msd for k in keys), 'EMA and model state_dict keys diverged'
+        self._ema_tensors = [esd[k] for k in keys]
+        self._model_tensors = [msd[k].detach() for k in keys]
+        self._cache_model_id = id(model)
 
     def update(self, model: nn.Module):
         if self.before_start < self.start:
             self.before_start += 1
             return
-        # Update EMA parameters
+        # Update EMA parameters: ema = d * ema + (1 - d) * model, fused across
+        # all tensors with foreach ops instead of one tiny kernel per tensor.
         with torch.no_grad():
             self.updates += 1
             d = self.decay_fn(self.updates)
-            msd = dist_utils.de_parallel(model).state_dict()
-            for k, v in self.module.state_dict().items():
-                if v.dtype.is_floating_point:
-                    v *= d
-                    v += (1 - d) * msd[k].detach()
+            if self._cache_model_id != id(model):
+                self._build_cache(model)
+            torch._foreach_mul_(self._ema_tensors, d)
+            torch._foreach_add_(self._ema_tensors, self._model_tensors, alpha=1.0 - d)
 
     def to(self, *args, **kwargs):
         self.module = self.module.to(*args, **kwargs)
+        self._cache_model_id = None  # .to() may reallocate storages
         return self
 
     def state_dict(self, ):
@@ -74,6 +89,7 @@ class ModelEMA(object):
 
     def load_state_dict(self, state, strict=True):
         self.module.load_state_dict(state['module'], strict=strict)
+        self._cache_model_id = None
         if 'updates' in state:
             self.updates = state['updates']
 
