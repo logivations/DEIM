@@ -2,26 +2,28 @@
 train_dataloader:
   dataset:
     transforms:
-      ops:
-        - {type: RandomPhotometricDistort, p: 0.5}
+      ops:  # CPU transforms (DataLoader workers)
         - {type: RandomZoomOut, fill: 0}
         - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
-        - {type: RandomHorizontalFlip}
-        - {type: Resize, size: [512, 512], }
+        - {type: Resize, size: [512, 512]}
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
         - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      gpu_ops:  # GPU transforms (Kornia) - run after .to(device) ~ -10m per epoch
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomHorizontalFlip, p: 0.5}
       policy:
         name: stop_epoch
         epoch: 72 # epoch in [71, ~) stop `ops`
-        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+        ops: ['Mosaic', 'RandomZoomOut', 'RandomIoUCrop']
 
   collate_fn:
     type: BatchImageCollateFunction
     base_size: 512
     base_size_repeat: 3
     stop_epoch: 72 # epoch in [72, ~) stop `multiscales`
+    gpu_interpolate: true  # do multi-scale resize on GPU instead of CPU ~ -10m per epoch
 
   shuffle: True
   total_batch_size: 8 # total batch size equals to 32 (4 * 8)

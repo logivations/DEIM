@@ -282,6 +282,14 @@ class LQE(nn.Module):
         prob_topk, _ = prob.topk(self.k, dim=-1)
         stat = torch.cat([prob_topk, prob_topk.mean(dim=-1, keepdim=True)], dim=-1)
         quality_score = self.reg_conf(stat.reshape(B, L, -1))
+        # NaN-guard for the ONNX/TensorRT path. Avoid torch.nan_to_num: it exports to
+        # IsNaN/IsInf nodes, and TensorRT 8.5.2.2 has no IsInf support (parser fails).
+        # `x != x` is True only for NaN and exports to Equal/Not + Where — all supported by TRT 8.5.
+        quality_score = torch.where(
+            quality_score != quality_score,
+            torch.zeros_like(quality_score),
+            quality_score,
+        )
         return scores + quality_score
 
 
@@ -373,8 +381,10 @@ class TransformerDecoder(nn.Module):
                 pre_scores = score_head[0](output)
                 ref_points_initial = pre_bboxes.detach()
 
-            # Refine bounding box corners using FDR, integrating previous layer's corrections
-            pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
+            # Refine bounding box corners using FDR, integrating previous layer's corrections.
+            # Clamp to FP16 range — accumulated corrections can overflow to inf in FP16 inference,
+            # which then causes softmax(inf, ...) = NaN in LQE, corrupting detection scores.
+            pred_corners = (bbox_head[i](output + output_detach) + pred_corners_undetach).clamp(-65504, 65504)
             inter_ref_bbox = distance2bbox(ref_points_initial, integral(pred_corners, project), reg_scale)
 
             if self.training or i == self.eval_idx:
@@ -448,6 +458,7 @@ class DFINETransformer(nn.Module):
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
         self.reg_max = reg_max
+        self.suppress_source_ids = set()  # filled by solver
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -716,6 +727,7 @@ class DFINETransformer(nn.Module):
                     num_denoising=self.num_denoising,
                     label_noise_ratio=self.label_noise_ratio,
                     box_noise_scale=1.0,
+                    suppress_source_ids=self.suppress_source_ids
                     )
         else:
             denoising_logits, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None

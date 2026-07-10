@@ -61,6 +61,41 @@ class DetSolver(BaseSolver):
         best_stat_print = best_stat.copy()
         start_time = time.time()
         start_epoch = self.last_epoch + 1
+
+        # Get GPU transforms pipeline if enabled
+        gpu_transforms = None
+        if hasattr(self.train_dataloader.dataset, '_transforms') and self.train_dataloader.dataset._transforms is not None:
+            gpu_transforms = self.train_dataloader.dataset._transforms.get_gpu_pipeline()
+            if gpu_transforms is not None:
+                gpu_transforms = gpu_transforms.to(self.device)
+                gpu_transforms.train()
+                print(f"     ### GPU Transforms pipeline loaded and moved to {self.device} ###")
+
+        # Get GPU interpolate config if enabled
+        multiscale_cfg = None
+        collate_fn = self.train_dataloader.collate_fn
+        if hasattr(collate_fn, 'gpu_interpolate') and collate_fn.gpu_interpolate:
+            multiscale_cfg = {
+                'scales': collate_fn.scales,
+                'stop_epoch': collate_fn.stop_epoch,
+            }
+            print(f"     ### GPU Interpolate enabled - scales: {collate_fn.scales} ###")
+
+        # Pass resolved configs from dataset to criterion (names → IDs)
+        dataset = self.train_dataloader.dataset
+        if hasattr(dataset, 'ignore_tags_resolved'):
+            self.criterion.ignore_tags_resolved = dataset.ignore_tags_resolved
+            print(f"     ### Ignore tags resolved: {self.criterion.ignore_tags_resolved} ###")
+        if hasattr(dataset, 'suppress_classes_resolved'):
+            resolved = dataset.suppress_classes_resolved
+            suppress_source_ids = set(resolved.keys())
+            # Criterion: full mapping {source_id: [suppress_ids]}
+            self.criterion.suppress_classes = resolved
+            # Decoder: set of source IDs for denoising filter
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+            model.decoder.suppress_source_ids = suppress_source_ids
+            print(f"     ### Suppress classes resolved: {resolved} ###")
+
         for epoch in range(start_epoch, args.epoches):
 
             self.train_dataloader.set_epoch(epoch)
@@ -76,18 +111,20 @@ class DetSolver(BaseSolver):
             train_stats = train_one_epoch(
                 self.self_lr_scheduler,
                 self.lr_scheduler,
-                self.model, 
-                self.criterion, 
-                self.train_dataloader, 
-                self.optimizer, 
-                self.device, 
-                epoch, 
-                max_norm=args.clip_max_norm, 
-                print_freq=args.print_freq, 
-                ema=self.ema, 
-                scaler=self.scaler, 
+                self.model,
+                self.criterion,
+                self.train_dataloader,
+                self.optimizer,
+                self.device,
+                epoch,
+                max_norm=args.clip_max_norm,
+                print_freq=args.print_freq,
+                ema=self.ema,
+                scaler=self.scaler,
                 lr_warmup_scheduler=self.lr_warmup_scheduler,
-                writer=self.writer
+                writer=self.writer,
+                gpu_transforms=gpu_transforms,
+                multiscale_cfg=multiscale_cfg,  # NEW: GPU multi-scale interpolate
             )
 
             if not self.self_lr_scheduler:  # update by epoch 
