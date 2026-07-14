@@ -27,8 +27,11 @@ train_dataloader:
 
   shuffle: True
   total_batch_size: 32 # total batch size equals to 32 (4 * 8)
-  num_workers: 16
+  # workers auto-scale to the runner: 2/3 of available cores by default;
+  # override the share with num_workers_ratio or pin exactly with num_workers
   pin_memory: True
+  persistent_workers: True  # keep workers alive between epochs (no respawn stall)
+  prefetch_factor: 4
 
 
 val_dataloader:
@@ -39,5 +42,6 @@ val_dataloader:
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
   total_batch_size: 64
-  num_workers: 16
   pin_memory: True
+  persistent_workers: True
+  prefetch_factor: 4

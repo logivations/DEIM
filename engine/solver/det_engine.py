@@ -134,20 +134,30 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
     lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
     gpu_transforms = kwargs.get('gpu_transforms', None)
     multiscale_cfg = kwargs.get('multiscale_cfg', None)  # NEW: GPU multi-scale interpolate
+    profile_sync = kwargs.get('profile_sync', False)
+
+    def _t():
+        # CUDA kernels are async: without a synchronize the timers measure kernel
+        # launch, not execution, and GPU time gets attributed to whatever stage
+        # hits a sync point first. profile_sync=True trades a small overhead for
+        # truthful per-stage attribution.
+        if profile_sync and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.time()
 
     cur_iters = epoch * len(data_loader)
 
     # Structured profiling metrics
     profiling = ProfilingMetrics()
-    t_load_start = time.time()
+    t_load_start = _t()
 
     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # Measure data loading time
-        t_data_load = time.time() - t_load_start
+        t_data_load = _t() - t_load_start
         profiling.data_load += t_data_load
 
         # Time data transfer to GPU + GPU transforms + interpolate
-        t_transfer_start = time.time()
+        t_transfer_start = _t()
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
@@ -160,7 +170,7 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             sz = random.choice(multiscale_cfg['scales'])
             samples = F.interpolate(samples, size=sz)
 
-        t_data_transfer = time.time() - t_transfer_start
+        t_data_transfer = _t() - t_transfer_start
         profiling.data_transfer += t_data_transfer
 
         global_step = epoch * len(data_loader) + i
@@ -168,76 +178,69 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
 
         if scaler is not None:
             # Forward pass with AMP
-            t_forward_start = time.time()
+            t_forward_start = _t()
             with torch.autocast(device_type=str(device), cache_enabled=True):
                 outputs = model(samples, targets=targets)
-            t_forward = time.time() - t_forward_start
+            t_forward = _t() - t_forward_start
             profiling.forward += t_forward
 
-            if torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any():
-                print("NaN or Inf detected")
-                outputs['pred_boxes'] = torch.nan_to_num(outputs['pred_boxes'], nan=0.0)
-                state = model.state_dict()
-                new_state = {'model': {k.replace('module.', ''): v for k, v in state.items()}}
-                dist_utils.save_on_master(new_state, "./NaN.pth")
-
             # Criterion
-            t_criterion_start = time.time()
+            t_criterion_start = _t()
             with torch.autocast(device_type=str(device), enabled=False):
                 loss_dict = criterion(outputs, targets, **metas)
-            t_criterion = time.time() - t_criterion_start
+            t_criterion = _t() - t_criterion_start
             profiling.criterion += t_criterion
             loss = sum(loss_dict.values())
 
             # Backward
-            t_backward_start = time.time()
+            t_backward_start = _t()
             scaler.scale(loss).backward()
             if max_norm > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            t_backward = time.time() - t_backward_start
+            t_backward = _t() - t_backward_start
             profiling.backward += t_backward
 
             # Optimizer
-            t_optimizer_start = time.time()
+            t_optimizer_start = _t()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            t_optimizer = time.time() - t_optimizer_start
+            t_optimizer = _t() - t_optimizer_start
             profiling.optimizer += t_optimizer
 
         else:
             # Forward pass without AMP
-            t_forward_start = time.time()
+            t_forward_start = _t()
             outputs = model(samples, targets=targets)
-            t_forward = time.time() - t_forward_start
+            t_forward = _t() - t_forward_start
             profiling.forward += t_forward
 
             # Criterion
-            t_criterion_start = time.time()
+            t_criterion_start = _t()
             loss_dict = criterion(outputs, targets, **metas)
-            t_criterion = time.time() - t_criterion_start
+            t_criterion = _t() - t_criterion_start
             profiling.criterion += t_criterion
 
             loss: torch.Tensor = sum(loss_dict.values())
             optimizer.zero_grad()
 
             # Backward
-            t_backward_start = time.time()
+            t_backward_start = _t()
             loss.backward()
             if max_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            t_backward = time.time() - t_backward_start
+            t_backward = _t() - t_backward_start
             profiling.backward += t_backward
 
             # Optimizer
-            t_optimizer_start = time.time()
+            t_optimizer_start = _t()
             optimizer.step()
-            t_optimizer = time.time() - t_optimizer_start
+            t_optimizer = _t() - t_optimizer_start
             profiling.optimizer += t_optimizer
 
         # Other overhead (EMA, LR scheduling, logging)
-        t_other_start = time.time()
+        t_other_start = _t()
 
         if ema is not None:
             ema.update(model)
@@ -266,12 +269,12 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             for k, v in loss_dict_reduced.items():
                 writer.add_scalar(f'Loss/{k}', v.item(), global_step)
 
-        t_other = time.time() - t_other_start
+        t_other = _t() - t_other_start
         profiling.other += t_other
         profiling.num_batches += 1
 
         # Reset timer for next batch data loading
-        t_load_start = time.time()
+        t_load_start = _t()
 
     # Gather stats from all processes
     metric_logger.synchronize_between_processes()

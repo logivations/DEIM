@@ -2,6 +2,15 @@ print_freq: 100
 output_dir: './logs'
 checkpoint_freq: 12
 
+# Accurate per-stage profiling in tensorboard: inserts torch.cuda.synchronize()
+# before every stage timer in train_one_epoch. Small overhead, truthful
+# attribution. Disable per run with: -u profile_sync=False
+profile_sync: True
+
+# TF32 matmul/conv on Ampere+ GPUs and cuDNN conv autotuning.
+allow_tf32: True
+cudnn_benchmark: True
+
 
 sync_bn: True
 find_unused_parameters: False
