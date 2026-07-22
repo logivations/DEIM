@@ -26,7 +26,7 @@ train_dataloader:
     gpu_interpolate: true  # do multi-scale resize on GPU instead of CPU ~ -10m per epoch
 
   shuffle: True
-  total_batch_size: 32 # total batch size equals to 32 (4 * 8)
+  total_batch_size: 2 # total batch size equals to 2 (2 * 1)
   # workers auto-scale to the runner: 2/3 of available cores by default;
   # override the share with num_workers_ratio or pin exactly with num_workers
   pin_memory: True
@@ -41,7 +41,7 @@ val_dataloader:
         - {type: Resize, size: [512, 512], }
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
-  total_batch_size: 64
+  total_batch_size: 2
   pin_memory: True
   persistent_workers: True
   prefetch_factor: 4
