@@ -4,6 +4,7 @@ task: detection
 ignore_tags:
   # classes present here will be ignored in loss if pallets_annotated == False
   pallets_annotated: ['pallet', 'pallet_bulk', 'pallet_off_ground', 'pallet_on_forks'] 
+  bag_annotated: ['bag'] 
   # vehicles_annotated: ['amr', 'forklift', ...]  # ussage
 
 suppress_classes:
