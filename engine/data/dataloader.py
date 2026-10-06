@@ -33,9 +33,30 @@ __all__ = [
 ]
 
 
+def resolve_num_workers(num_workers=None, num_workers_ratio=2 / 3):
+    """Resolve the worker count from a share of the CPUs available to this
+    process. Runners differ in core count, so configs specify a ratio
+    (default 2/3) instead of a hardcoded number; an explicit `num_workers`
+    in the config still wins.
+    """
+    if num_workers is not None:
+        return num_workers
+    try:
+        cores = len(os.sched_getaffinity(0))  # respects container cpusets
+    except AttributeError:
+        cores = os.cpu_count() or 1
+    resolved = max(1, int(cores * num_workers_ratio))
+    print(f"     ### DataLoader workers: {resolved} ({num_workers_ratio:.2f} of {cores} available cores) ###")
+    return resolved
+
+
 @register()
 class DataLoader(data.DataLoader):
     __inject__ = ['dataset', 'collate_fn']
+
+    def __init__(self, *args, num_workers=None, num_workers_ratio=2 / 3, **kwargs):
+        num_workers = resolve_num_workers(num_workers, num_workers_ratio)
+        super().__init__(*args, num_workers=num_workers, **kwargs)
 
     def __repr__(self) -> str:
         format_string = self.__class__.__name__ + "("
@@ -73,11 +94,17 @@ def batch_image_collate_fn(items):
 
 class BaseCollateFunction(object):
     def set_epoch(self, epoch):
-        self._epoch = epoch
+        # Shared-memory tensor: the collate_fn runs inside DataLoader workers,
+        # which with persistent_workers never re-pickle it — a plain attribute
+        # would go stale there. See DetDataset.set_epoch.
+        if not hasattr(self, '_shared_epoch'):
+            self._shared_epoch = torch.tensor([int(epoch)], dtype=torch.int64).share_memory_()
+        else:
+            self._shared_epoch[0] = int(epoch)
 
     @property
     def epoch(self):
-        return self._epoch if hasattr(self, '_epoch') else -1
+        return int(self._shared_epoch[0]) if hasattr(self, '_shared_epoch') else -1
 
     def __call__(self, items):
         raise NotImplementedError('')

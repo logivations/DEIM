@@ -44,6 +44,19 @@ class BaseSolver(object):
         else:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        if torch.cuda.is_available():
+            if cfg.allow_tf32:
+                # TF32 on Ampere+: ~10-bit mantissa fp32 matmul/conv, big speedup.
+                # Criterion runs with autocast disabled, so this affects it directly.
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.set_float32_matmul_precision('high')
+            if cfg.cudnn_benchmark:
+                # Autotune conv algorithms per input shape. Multiscale training uses
+                # a small fixed set of shapes, so the cache warms up within the first
+                # steps of each shape and stays hot.
+                torch.backends.cudnn.benchmark = True
+
         self.model = cfg.model
 
         # NOTE: Must load_tuning_state before EMA instance building

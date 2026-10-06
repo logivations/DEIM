@@ -52,7 +52,7 @@ class Inference:
         self,
         cfg: YAMLConfig,
         checkpoint_file: str,
-        inf_dir: str,
+        image_dir: str,
         training_res: list = [512, 512],
         annotation_file: Optional[str] = None,
         threshold: float = 0.5,
@@ -62,24 +62,20 @@ class Inference:
     ):
         self.checkpoint_file = checkpoint_file
         self.device = device
-        self.inf_dir = inf_dir
+        self.image_dir = image_dir
         self.output_file = output_file
         self.training_res = training_res
         self.cfg = cfg
         self.coco_results = {}
 
-        self.fps_logger = FPSLogger(len(os.listdir(self.inf_dir)))
+        self.fps_logger = FPSLogger(len(os.listdir(self.image_dir)))
         self.model = self.init_model()
-        self.coco_evaluator = None
-        self.print_function = lambda x: None
-        self.metrics_file = None
-        if annotation_file is not None:
-            self.metrics_file = open(metrics_path, 'a')
-            self.print_function = lambda x: self.metrics_file.write(x + '\n')
-            coco_gt = COCO(
-                annotation_file=annotation_file, print_function=self.print_function
-            )
-            self.coco_evaluator = CocoEvaluator(coco_gt=coco_gt, iou_types=['bbox', ])
+        self.metrics_file = open(metrics_path, 'a')
+        self.print_function = lambda x: self.metrics_file.write(x + '\n')
+        coco_gt = COCO(
+            annotation_file=annotation_file, print_function=self.print_function
+        )
+        self.coco_evaluator = CocoEvaluator(coco_gt=coco_gt, iou_types=['bbox', ])
 
         self.run(threshold)
 
@@ -134,30 +130,29 @@ class Inference:
         return [(label, bbox, score) for label, bbox, score in zip(labels[0], boxes[0], scores[0]) if
                           score > threshold]
 
-    def run(self, threshold=0.5, batch_size=64):
-        results = []
-        files = os.listdir(self.inf_dir)
-        for batch in chunks(files, batch_size):
+    def run(self, threshold=0.5):
+        results = []        
+        for img_id, img_info in self.coco_evaluator.coco_gt.imgs.items():
             with torch.no_grad():
-                for imn in batch:
-                    img_path = f"{self.inf_dir}/{imn}"
-                    self.fps_logger.start_record()
-                    labels, boxes, scores = self.process_image(img_path)
-                    filtered_items = self.filter_detections(labels, boxes, scores, threshold)
-                    im_pil = Image.open(img_path).convert('RGB')
-                    bboxes = []
-                    for label, bbox, score in filtered_items:
-                        # x1, y1, x2, y2
-                        bbox = scale_bbox_coordinates(bbox, im_pil.size, self.training_res)
-                        if self.coco_evaluator is not None:
-                            img_id = self.coco_evaluator.get_image_id(imn)
-                            self.log_single_ann(img_id, label, bbox, score)
+                file_name = img_info['file_name']
+                image_path = os.path.join(self.image_dir, file_name)
+                self.fps_logger.start_record()
+                labels, boxes, scores = self.process_image(image_path)
+                filtered_items = self.filter_detections(labels, boxes, scores, threshold)
+                im_pil = Image.open(image_path).convert('RGB')
 
-                        # x1, x2, y1, y2 why?
-                        det = list(map(float, [bbox[0], bbox[2], bbox[1], bbox[3], label, score]))
-                        bboxes.append(det)
-                    results.append({img_path: bboxes})
-                    self.fps_logger.end_record()
+                bboxes = []
+                for label, bbox, score in filtered_items:
+                    # x1, y1, x2, y2
+                    bbox = scale_bbox_coordinates(bbox, im_pil.size, self.training_res)
+                    if self.coco_evaluator is not None:
+                        img_id = self.coco_evaluator.get_image_id(file_name)
+                        self.log_single_ann(img_id, label, bbox, score)
+                    # x1, x2, y1, y2 why?
+                    det = list(map(float, [bbox[0], bbox[2], bbox[1], bbox[3], label, score]))
+                    bboxes.append(det)
+                results.append({file_name: bboxes})
+                self.fps_logger.end_record()
             torch.cuda.empty_cache()
         if self.coco_evaluator and self.coco_evaluator.evaluated():
             self.coco_evaluator.coco_eval['bbox'].print_function = self.print_function
@@ -171,6 +166,7 @@ class Inference:
                 json.dump(results, f)
         return results
 
+        
     def log_single_ann(self, img_id, label, box, score):
         """"""
         if img_id not in self.coco_results:
@@ -194,7 +190,10 @@ if __name__ == '__main__':
     # LabelStudio
     parser.add_argument('--num-classes', type=int, required=True)
     parser.add_argument(
-        "--inf_dir", type=str, help="Directory containing images for inference"
+        "--image_dir", 
+        type=str, 
+        default="/dataset/", 
+        help="Directory containing images for inference"
     )
     parser.add_argument(
         "--threshold",
@@ -226,7 +225,7 @@ if __name__ == '__main__':
     inf = Inference(
         cfg=cfg,
         checkpoint_file=args.resume,
-        inf_dir=args.inf_dir,
+        image_dir=args.image_dir,
         training_res=args.training_res,
         annotation_file=args.ann_file,
         threshold=args.threshold,

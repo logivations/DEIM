@@ -26,8 +26,16 @@ train_dataloader:
 
   shuffle: True
   total_batch_size: 32 # total batch size equals to 32 (4 * 8)
-  num_workers: 16
+  # workers auto-scale to the runner: share of available cores; override the
+  # share with num_workers_ratio or pin exactly with num_workers.
+  # Capped at ~1/3: each worker CoW-copies the COCO annotation index
+  # (~1.5-2.5 GB per worker on a 300k-image dataset), so 16 workers on a
+  # 24-core/32GB host overcommitted RAM and swap-thrashed (GPU idle,
+  # epochs 20 min -> 3 h). 8 workers keep the GPU fed at 512x512.
+  num_workers_ratio: 0.34
   pin_memory: True
+  persistent_workers: True  # keep workers alive between epochs (no respawn stall)
+  prefetch_factor: 2
 
 
 val_dataloader:
@@ -38,5 +46,11 @@ val_dataloader:
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
   shuffle: False
   total_batch_size: 64
-  num_workers: 16
   pin_memory: True
+  # Validation runs once per epoch and is cheap (resize-only transforms), but
+  # 16 persistent val workers each pinned a CoW copy of the annotation index
+  # (~4 GB swap per worker observed) for the whole run. Spawning a few workers
+  # per eval costs seconds and releases ~10s of GB between evals.
+  num_workers: 4
+  persistent_workers: False
+  prefetch_factor: 2

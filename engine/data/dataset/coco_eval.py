@@ -113,6 +113,13 @@ class CustomCOCOEvaluator(COCOeval_faster):
             f"{'Label':<25} {'Num of Ann':<12} {'AR':<10} {'AP':<10} {'f1-score':<10}"
         )
 
+        number_of_valid_annotations = sum(
+            annotation_counts.get(cat_id, 0)
+            for idx, cat_id in enumerate(self.params.catIds)
+            if annotation_counts.get(cat_id, 0) > 0
+            and not np.isnan(f1_scores[idx])
+        )
+
         classes_f1 = []
         classes_map = []
 
@@ -122,13 +129,13 @@ class CustomCOCOEvaluator(COCOeval_faster):
             recall = recalls[idx]
             f1 = f1_scores[idx]
 
-            num_annotations = annotation_counts.get(cat_id, 1)
+            num_annotations = annotation_counts.get(cat_id, 0)
             adjusted_f1 = 0.0
             adjusted_map = 0.0
 
-            if num_annotations != 0:
-                adjusted_f1 = f1 * (num_annotations / number_of_all_annotations)
-                adjusted_map = precision * (num_annotations / number_of_all_annotations)
+            if num_annotations > 0 and not np.isnan(f1):
+                adjusted_f1 = f1 * (num_annotations / number_of_valid_annotations)
+                adjusted_map = precision * (num_annotations / number_of_valid_annotations)
 
             self.print_function(
                 f"{name:<25} "

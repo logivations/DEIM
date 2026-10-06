@@ -31,18 +31,24 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     __share__ = ['remap_mscoco_category', 'ignore_tags', 'suppress_classes']
 
     def __init__(
-        self, 
-        img_folder, 
-        ann_file, 
-        transforms, 
-        return_masks=False, 
-        remap_mscoco_category=False, 
-        ignore_tags=None, 
-        suppress_classes=None
+        self,
+        img_folder,
+        ann_file,
+        transforms,
+        return_masks=False,
+        remap_mscoco_category=False,
+        ignore_tags=None,
+        suppress_classes=None,
+        presize_res=None
     ):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.ignore_tags_cfg = ignore_tags or {}
+        # JPEG DCT-domain scaled decode: images are decoded directly at 1/2,
+        # 1/4 or 1/8 size (whichever still keeps both sides >= presize_res),
+        # bboxes are rescaled to match. Cuts worker CPU cost of decode and of
+        # the full-resolution augmentations without touching the files on disk.
+        self.presize_res = presize_res
 
         self.prepare = ConvertCocoPolysToMask(
             return_masks,
@@ -88,15 +94,52 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
             img, target, _ = self._transforms(img, target, self)
         return img, target
 
+    def _load_image(self, id: int):
+        if self.presize_res:
+            path = os.path.join(self.root, self.coco.loadImgs(id)[0]['file_name'])
+            image = Image.open(path)
+            # libjpeg decodes fewer DCT coefficients -> faster than full decode.
+            # No-op for non-JPEG formats and for images already <= presize_res.
+            image.draft('RGB', (self.presize_res, self.presize_res))
+            return image.convert('RGB')
+        return super(CocoDetection, self)._load_image(id)
+
     def load_item(self, idx):
         image, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
+
+        orig_wh = None
+        if self.presize_res:
+            info = self.coco.loadImgs(image_id)[0]
+            orig_wh = (int(info['width']), int(info['height']))
+            sx = image.size[0] / orig_wh[0]
+            sy = image.size[1] / orig_wh[1]
+            if sx != 1.0 or sy != 1.0:
+                # Annotations are in original pixel coords; rescale COPIES to the
+                # decoded size (the dicts belong to the shared COCO index —
+                # mutating them in place would corrupt every following epoch).
+                scaled = []
+                for ann in target:
+                    ann = dict(ann)
+                    x, y, w, h = ann['bbox']
+                    ann['bbox'] = [x * sx, y * sy, w * sx, h * sy]
+                    if 'area' in ann:
+                        ann['area'] = ann['area'] * sx * sy
+                    scaled.append(ann)
+                target = scaled
+
         target = {'image_id': image_id, 'annotations': target}
 
         if self.remap_mscoco_category:
             image, target = self.prepare(image, target, category2label=mscoco_category2label)
         else:
             image, target = self.prepare(image, target)
+
+        if orig_wh is not None:
+            # Keep evaluation in the original pixel space: the postprocessor maps
+            # normalized predictions with orig_size, and the COCO GT used by the
+            # evaluator is in original coordinates.
+            target['orig_size'] = torch.as_tensor(orig_wh)
 
         target['idx'] = torch.tensor([idx])
 
